@@ -91,6 +91,34 @@ namespace RTBench
     {
         // Test copy only (the save on disk is never written): names the faction/settlements so the naming dialog (opened every 1000 ticks
         // otherwise) stays closed, then adds colonists and food so the colony is large and stays alive for the whole run.
+        // What the colonists are doing, to compare behaviour with and without RimThreaded (read on the main thread between ticks):
+        // downed / bleeding / untended-injury counts, average food level, and how many colonists are on each job.
+        static string ColonySnapshot(Map map)
+        {
+            if (map == null) return "no map";
+            int downed = 0, bleeding = 0, untended = 0, hungry = 0, n = 0;
+            float food = 0f;
+            var jobs = new System.Collections.Generic.Dictionary<string, int>();
+            foreach (Pawn p in map.mapPawns.FreeColonistsSpawned)
+            {
+                n++;
+                if (p.Downed) downed++;
+                if (p.health.hediffSet.BleedRateTotal > 0f) bleeding++;
+                if (p.health.HasHediffsNeedingTend()) untended++;
+                if (p.needs?.food != null)
+                {
+                    food += p.needs.food.CurLevelPercentage;
+                    if (p.needs.food.CurCategory >= HungerCategory.UrgentlyHungry) hungry++;
+                }
+                string job = p.CurJobDef?.defName ?? "none";
+                jobs[job] = jobs.TryGetValue(job, out int c) ? c + 1 : 1;
+            }
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"n={n} downed={downed} bleeding={bleeding} needTend={untended} urgentlyHungry={hungry} avgFood={(n > 0 ? food / n : 0f):F2} jobs:");
+            foreach (var kv in jobs) sb.Append(' ').Append(kv.Key).Append('=').Append(kv.Value);
+            return sb.ToString();
+        }
+
         static void PrepareColony(Map map)
         {
             if (!Faction.OfPlayer.HasName) Faction.OfPlayer.Name = "RTBench Colony";
@@ -170,6 +198,7 @@ namespace RTBench
             {
                 double dt = t - lastMark;
                 Log.Message($"[RTBENCH] t={t - RTBenchStartup.warmup:F0}s tps={(tm.TicksGame - lastTicks) / dt:F1} fps={(frames - lastFrames) / dt:F1} forcedSlow={tm.slower.ForcedNormalSpeed} speed={tm.CurTimeSpeed} paused={tm.Paused} windows={Find.WindowStack.Count} colonists={Find.CurrentMap?.mapPawns.FreeColonistsCount}");
+                Log.Message("[RTBENCH] colony " + ColonySnapshot(Find.CurrentMap));
                 lastTicks = tm.TicksGame; lastFrames = frames; lastMark = t;
             }
             if (t - RTBenchStartup.warmup >= RTBenchStartup.duration)
