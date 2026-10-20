@@ -61,7 +61,6 @@ namespace RimThreaded
 			GraphicDatabase_Patch.RunNonDestructivePatches();
 			FullPool_Patch_RunNonDestructivePatches();
 			Dijkstra_Patch_RunNonDestructivePatches();
-			PathFinder_Patch.AddFieldReplacements();
 			Region_Patch.AddFieldReplacements();
 			replaceFields.Add(Method(typeof(Time), "get_realtimeSinceStartup"), Method(typeof(Time_Patch), nameof(Time_Patch.get_realtimeSinceStartup)));
 			replaceFields.Add(Method(typeof(RenderTexture), nameof(RenderTexture.ReleaseTemporary)), Method(typeof(RenderTexture_Patch), nameof(RenderTexture_Patch.ReleaseTemporary)));
@@ -828,7 +827,6 @@ namespace RimThreaded
 			CompSpawnSubplant_Transpile.RunNonDestructivePatches(); //fixes bug with royalty spawning subplants
 			Designator_Haul_Patch.RunNonDestructivePatches(); //add thing to hauling list when user specifically designates it via UI
 			CompForbiddable_Patch.RunNonDestructivePatches(); //add thing to hauling list when user specifically unforbids it via UI
-			PathFinder_Patch.RunNonDestructivePatches(); //simple initialize calcGrid on InitStatusesAndPushStartNode
 			TimeControls_Patch.RunNonDestructivePatches(); //allow speed 4
 			ZoneManager_Patch.RunNonDestructivePatches(); //recheck growing zone when upon zone grid add
 			Zone_Patch.RunNonDestructivePatches(); //recheck growing zone when upon check haul destination call
@@ -965,7 +963,6 @@ namespace RimThreaded
 			PawnCapacitiesHandler_Patch.RunDestructivePatches();
 			PawnDestinationReservationManager_Patch.RunDestructivePatches();			
 			PawnPath_Patch.RunDestructivePatches();
-			PawnPathPool_Patch.RunDestructivePatches(); //removed leak check based on map size, since pool is now a threadstatic
 			PawnTextureAtlas_Patch.RunDestructivePatches();
 			PawnUtility_Patch.RunDestructivePatches();
 			Plant_Patch.RunNonDestructivePatches();

@@ -1,4 +1,5 @@
 ﻿using System;
+using Verse;
 using System.Collections.Generic;
 using RimWorld;
 using Verse;
@@ -8,7 +9,7 @@ using HarmonyLib;
 using static HarmonyLib.AccessTools;
 using System.Reflection.Emit;
 using System.Reflection;
-using static Verse.AI.PathFinder;
+using static Verse.PathFinder;
 using System.Linq;
 
 namespace RimThreaded.RW_Patches

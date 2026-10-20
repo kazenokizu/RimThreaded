@@ -206,8 +206,6 @@ namespace RimThreaded
             Dijkstra_Patch<int>.InitializeThreadStatics();
             GenTemperature_Patch.InitializeThreadStatics();
             HaulingCache.InitializeThreadStatics();
-            PathFinder_Patch.InitializeThreadStatics();
-            PawnPathPool_Patch.InitializeThreadStatics();
             JumboCell.InitializeThreadStatics();
             PawnTextureAtlas_Patch.InitializeThreadStatics();
             Reachability_Patch.InitializeThreadStatics();
