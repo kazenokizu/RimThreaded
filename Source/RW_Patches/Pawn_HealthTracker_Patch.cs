@@ -55,7 +55,7 @@ namespace RimThreaded.RW_Patches
             Monitor.TryEnter(Pawn_HealthTrackerHediffSet, RimThreaded.halfTimeoutMS, ref Pawn_HealthTrackerLockTaken);
             if (Pawn_HealthTrackerLockTaken)
                 return true;
-            Log.Error("RimThreaded.CheckForStateChange was unable to be obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + RimThreaded.halfTimeoutMS.ToString());
+            Log.Error("RimThreaded.CheckForStateChange was unable to be obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds);
             return false;
         }
         public static void CheckForStateChangeMonitorExit(Pawn_HealthTracker __instance, DamageInfo? dinfo, Hediff hediff)
@@ -71,7 +71,7 @@ namespace RimThreaded.RW_Patches
             Monitor.TryEnter(Pawn_HealthTrackerHediffSet2, RimThreaded.halfTimeoutMS, ref Pawn_HealthTrackerLockTaken2);
             if (Pawn_HealthTrackerLockTaken2)
                 return true;
-            Log.Error("RimThreaded.CheckForStateChange was unable to be obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + RimThreaded.halfTimeoutMS.ToString());
+            Log.Error("RimThreaded.CheckForStateChange was unable to be obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds);
             return false;
         }
         public static void PostApplyDamageExit(Pawn_HealthTracker __instance, DamageInfo dinfo, float totalDamageDealt)
@@ -180,7 +180,7 @@ namespace RimThreaded.RW_Patches
             Monitor.TryEnter(resurrectHediffSet, RimThreaded.halfTimeoutMS, ref resurrectLockTaken);
             if (resurrectLockTaken)
                 return true;
-            Log.Error("RimThreaded.Notify_Resurrected was unable to obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + RimThreaded.halfTimeoutMS.ToString());
+            Log.Error("RimThreaded.Notify_Resurrected was unable to obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds);
             return false;
         }
         public static void Notify_ResurrectedExit(Pawn_HealthTracker __instance)

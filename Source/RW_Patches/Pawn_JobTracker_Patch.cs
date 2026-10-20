@@ -53,7 +53,7 @@ namespace RimThreaded.RW_Patches
                 if (!warnedTimeout)
                 {
                     warnedTimeout = true;
-                    Log.Warning("RimThreaded: job-finding lock not obtained within " + RimThreaded.halfTimeoutMS + " ms; continuing without serialization (logged once).");
+                    Log.Warning("RimThreaded: job-finding lock not obtained within " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds + " ms; continuing without serialization (logged once).");
                 }
             }
             return true;

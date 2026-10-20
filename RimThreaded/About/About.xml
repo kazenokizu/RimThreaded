@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 
 <ModMetaData>
 	<name>RimThreaded</name>
@@ -10,10 +10,10 @@
   <description>
     RimThreaded enables RimWorld to utilize multiple threads and thus greatly increases the speed of the game.
 
-    Version 2.7.2
-    -Added RimWorld 1.4.8333.294475 support
-    -Fixed some bugs with Remove Hediffs including pregnancy bug
-    -Fixed alerts not appearing bug
+    UNOFFICIAL RimWorld 1.6 port (local build, not released by the original author)
+    -Built and patch-validated against RimWorld 1.6.4871 rev590 with Harmony 2.4.3
+    -Not tested in a live game by the porter: report problems with Player.log, not to the original author
+    -Based on RimThreaded 2.7.2 (1.4)
 
     JOIN OUR COMMUNITY ON DISCORD:
     https://discord.gg/3JJuWK8

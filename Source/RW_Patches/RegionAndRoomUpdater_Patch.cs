@@ -56,7 +56,7 @@ namespace RimThreaded.RW_Patches
             if (!warnedTimeout)
             {
                 warnedTimeout = true;
-                Log.Warning("RimThreaded: region rebuild skipped, region lock not obtained within " + RimThreaded.halfTimeoutMS + " ms (retried next frame; logged once).");
+                Log.Warning("RimThreaded: region rebuild skipped, region lock not obtained within " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds + " ms (retried next frame; logged once).");
             }
             return false;
         }
