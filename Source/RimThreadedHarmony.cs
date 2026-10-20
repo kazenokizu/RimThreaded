@@ -977,7 +977,6 @@ namespace RimThreaded
 
 			//---Multithreaded Ticking---
 			FactionManager_Patch.RunDestructivePatches(); //allows multithreaded ticking of factions
-			TradeShip_Patch.RunDestructivePatches(); //allows multithreaded ticking of tradeships
 			WildPlantSpawner_Patch.RunDestructivePatches(); //allows multithreaded icking of WildPlantSpawner
 			WindManager_Patch.RunDestructivePatches();//allows multithreaded icking of WindManager													  
 			WorldComponentUtility_Patch.RunDestructivePatches(); //allows multithreaded icking of WorldComponentUtility

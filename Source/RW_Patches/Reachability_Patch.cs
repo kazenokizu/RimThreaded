@@ -48,6 +48,10 @@ namespace RimThreaded.RW_Patches
 
         }
 
+        // Copy of 1.6 Reachability.CanReach. Kept as a copy because vanilla marks visited regions in the shared Region.reachedIndex field, which two
+        // threads would corrupt; this version tracks visited regions in a per-thread HashSet. Synced with 1.6: MapHeld check and the
+        // PassAllDestroyablePlayerOwnedThings mode. Vanilla CheckCellBasedReachability is called as-is; it caches via the manager's own
+        // (unused, empty) start/dest lists, so cell-based modes are simply not cached.
         public static bool CanReach(Reachability __instance, ref bool __result, IntVec3 start, LocalTargetInfo dest, PathEndMode peMode, TraverseParms traverseParams)
         {
             Map map = __instance.map;
@@ -85,7 +89,7 @@ namespace RimThreaded.RW_Patches
                 return false;
             }
 
-            if (dest.HasThing && dest.Thing.Map != map)
+            if (dest.HasThing && dest.Thing.MapHeld != map) // 1.6: MapHeld (things inside containers/inventories)
             {
                 __result = false;
                 return false;
@@ -107,7 +111,7 @@ namespace RimThreaded.RW_Patches
                 }
             }
 
-            if (traverseParams.mode == TraverseMode.PassAllDestroyableThings)
+            if (traverseParams.mode == TraverseMode.PassAllDestroyableThings || traverseParams.mode == TraverseMode.PassAllDestroyablePlayerOwnedThings) // 1.6 mode
             {
                 TraverseParms traverseParams2 = traverseParams;
                 traverseParams2.mode = TraverseMode.PassDoors;
@@ -147,7 +151,7 @@ namespace RimThreaded.RW_Patches
                         break;
                 }
 
-                if (destRegions.Count == 0 && traverseParams.mode != TraverseMode.PassAllDestroyableThings && traverseParams.mode != TraverseMode.PassAllDestroyableThingsNotWater)
+                if (destRegions.Count == 0 && traverseParams.mode != TraverseMode.PassAllDestroyableThings && traverseParams.mode != TraverseMode.PassAllDestroyablePlayerOwnedThings && traverseParams.mode != TraverseMode.PassAllDestroyableThingsNotWater)
                 {
                     __result = false;
                     return false;
@@ -159,7 +163,7 @@ namespace RimThreaded.RW_Patches
                 startingRegions.Clear();
 
                 DetermineStartRegions(map, start, startingRegions, pathGrid, regionGrid, openQueue, regionsReached);
-                if (openQueue.Count == 0 && traverseParams.mode != TraverseMode.PassAllDestroyableThings && traverseParams.mode != TraverseMode.PassAllDestroyableThingsNotWater)
+                if (openQueue.Count == 0 && traverseParams.mode != TraverseMode.PassAllDestroyableThings && traverseParams.mode != TraverseMode.PassAllDestroyablePlayerOwnedThings && traverseParams.mode != TraverseMode.PassAllDestroyableThingsNotWater)
                 {
                     __result = false;
                     return false;
@@ -177,7 +181,7 @@ namespace RimThreaded.RW_Patches
                             return false;
                     }
                 }
-                if (traverseParams.mode == TraverseMode.PassAllDestroyableThings || traverseParams.mode == TraverseMode.PassAllDestroyableThingsNotWater || traverseParams.mode == TraverseMode.NoPassClosedDoorsOrWater)
+                if (traverseParams.mode == TraverseMode.PassAllDestroyableThings || traverseParams.mode == TraverseMode.PassAllDestroyablePlayerOwnedThings || traverseParams.mode == TraverseMode.PassAllDestroyableThingsNotWater || traverseParams.mode == TraverseMode.NoPassClosedDoorsOrWater)
                 {
                     bool result = __instance.CheckCellBasedReachability(start, dest, peMode, traverseParams);
                     __result = result;

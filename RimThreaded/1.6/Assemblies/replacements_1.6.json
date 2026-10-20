@@ -447,6 +447,45 @@
         },
         {
           "FieldName": "spawnedPawnsWhoShouldHaveInventoryUnloadedResult"
+        },
+        {
+          "FieldName": "humanlikePawnsResult"
+        },
+        {
+          "FieldName": "humanlikeSpawnedPawnsResult"
+        },
+        {
+          "FieldName": "freeAdultColonistsSpawnedResult"
+        },
+        {
+          "FieldName": "spawnedHumanlikesWithAnyHediffResult"
+        },
+        {
+          "FieldName": "spawnedAnimalsWithAnyHediffResult"
+        },
+        {
+          "FieldName": "spawnedPawnsWithMiscNeedsResult"
+        },
+        {
+          "FieldName": "colonyAnimalsResult"
+        },
+        {
+          "FieldName": "spawnedColonyAnimalsResult"
+        },
+        {
+          "FieldName": "spawnedColonyMechsResult"
+        },
+        {
+          "FieldName": "colonySubhumansResult"
+        },
+        {
+          "FieldName": "spawnedColonySubhumansResult"
+        },
+        {
+          "FieldName": "slavesAndPrisonersOfColonySpawnedResult"
+        },
+        {
+          "FieldName": "tmpFactionsOnMap"
         }
       ]
     },

@@ -305,11 +305,16 @@ public static class Program
                 bool skips = false;
                 for (int i = 0; i + 1 < ins.Count; i++) if (ins[i].opcode == OpCodes.Ldc_I4_0 && ins[i + 1].opcode == OpCodes.Ret) skips = true;
                 if (!skips || pre.PatchMethod.ReturnType != typeof(bool)) continue;
+                bool returnsTrue = false;
+                for (int i = 0; i + 1 < ins.Count; i++) if (ins[i].opcode == OpCodes.Ldc_I4_1 && ins[i + 1].opcode == OpCodes.Ret) returnsTrue = true;
+                // a prefix that can return true (or computes its return value) lets vanilla run on some path: a guard, not a replacement
+                bool computed = ins.Any(ci => ci.opcode == OpCodes.Ret) && !returnsTrue && ins.Where((ci, i) => ci.opcode == OpCodes.Ret && i > 0 && ins[i - 1].opcode != OpCodes.Ldc_I4_0).Any();
+                string kind = returnsTrue || computed ? "GUARD" : "REPLACEMENT";
                 try
                 {
                     var o = Keys(original); var pk = Keys(pre.PatchMethod);
                     var missing = o.Where(k => !pk.Contains(k)).OrderBy(k => k).ToList();
-                    lines.Add((missing.Count, Name(original) + " <- " + pre.PatchMethod.DeclaringType.Name + " : vanilla touches " + o.Count + ", missing " + missing.Count + " : " + string.Join(", ", missing)));
+                    lines.Add((missing.Count, kind + " " + Name(original) + " <- " + pre.PatchMethod.DeclaringType.Name + " : vanilla touches " + o.Count + ", missing " + missing.Count + " : " + string.Join(", ", missing)));
                 }
                 catch (Exception e) { lines.Add((-1, Name(original) + " could not be analysed: " + e.GetType().Name)); }
             }

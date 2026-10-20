@@ -48,6 +48,8 @@ namespace RimThreaded.RW_Patches
         }
 
 
+        // Synced with 1.6 ListerThings.Add: haulSources (IHaulSource) and thingListChangedCallbacks were added in 1.6.
+        // Mutations are serialized on the lister; Remove replaces lists (copy-on-write) so readers holding a list are unaffected.
         public static bool Add(ListerThings __instance, Thing t)
         {
             ThingDef thingDef = t.def;
@@ -61,17 +63,17 @@ namespace RimThreaded.RW_Patches
                 if (!__instance.listsByDef.TryGetValue(thingDef, out List<Thing> value))
                 {
                     value = new List<Thing>();
-                    __instance.listsByDef.Add(t.def, value);
+                    __instance.listsByDef.Add(thingDef, value);
                 }
                 value.Add(t);
-            }
-
-            ThingRequestGroup[] allGroups = ThingListGroupHelper.AllGroups;
-            foreach (ThingRequestGroup thingRequestGroup in allGroups)
-            {
-                if ((__instance.use != ListerThingsUse.Region || thingRequestGroup.StoreInRegion()) && thingRequestGroup.Includes(thingDef))
+                if (t is IHaulSource haulSource)
                 {
-                    lock (__instance)
+                    __instance.haulSources.Add(haulSource);
+                }
+                ThingRequestGroup[] allGroups = ThingListGroupHelper.AllGroups;
+                foreach (ThingRequestGroup thingRequestGroup in allGroups)
+                {
+                    if ((__instance.use != ListerThingsUse.Region || thingRequestGroup.StoreInRegion()) && thingRequestGroup.Includes(thingDef))
                     {
                         List<Thing> list = __instance.listsByGroup[(uint)thingRequestGroup];
                         if (list == null)
@@ -85,6 +87,7 @@ namespace RimThreaded.RW_Patches
                     }
                 }
             }
+            __instance.thingListChangedCallbacks?.onThingAdded?.Invoke(t);
             return false;
         }
 
@@ -118,6 +121,7 @@ namespace RimThreaded.RW_Patches
 			*/
         }
 
+        // Synced with 1.6 ListerThings.Remove: listsByDef may lack the def (TryGetValue), haulSources and thingListChangedCallbacks.
         public static bool Remove(ListerThings __instance, Thing t)
         {
             ThingDef thingDef = t.def;
@@ -127,26 +131,34 @@ namespace RimThreaded.RW_Patches
             }
             lock (__instance)
             {
-                List<Thing> newListsByDef = new List<Thing>(__instance.listsByDef[thingDef]);
-                newListsByDef.Remove(t);
-                __instance.listsByDef[thingDef] = newListsByDef;
-            }
-
-            ThingRequestGroup[] allGroups = ThingListGroupHelper.AllGroups;
-            for (int i = 0; i < allGroups.Length; i++)
-            {
-                ThingRequestGroup thingRequestGroup = allGroups[i];
-                if ((__instance.use != ListerThingsUse.Region || thingRequestGroup.StoreInRegion()) && thingRequestGroup.Includes(thingDef))
+                if (__instance.listsByDef.TryGetValue(thingDef, out List<Thing> byDef))
                 {
-                    lock (__instance)
+                    List<Thing> newListsByDef = new List<Thing>(byDef);
+                    newListsByDef.Remove(t);
+                    __instance.listsByDef[thingDef] = newListsByDef;
+                }
+                if (t is IHaulSource haulSource)
+                {
+                    __instance.haulSources.Remove(haulSource);
+                }
+                ThingRequestGroup[] allGroups = ThingListGroupHelper.AllGroups;
+                for (int i = 0; i < allGroups.Length; i++)
+                {
+                    ThingRequestGroup thingRequestGroup = allGroups[i];
+                    if ((__instance.use != ListerThingsUse.Region || thingRequestGroup.StoreInRegion()) && thingRequestGroup.Includes(thingDef))
                     {
-                        List<Thing> newListsByGroup = new List<Thing>(__instance.listsByGroup[i]);
-                        newListsByGroup.Remove(t);
-                        __instance.listsByGroup[i] = newListsByGroup;
+                        List<Thing> current = __instance.listsByGroup[i];
+                        if (current != null)
+                        {
+                            List<Thing> newListsByGroup = new List<Thing>(current);
+                            newListsByGroup.Remove(t);
+                            __instance.listsByGroup[i] = newListsByGroup;
+                        }
                         __instance.stateHashByGroup[(uint)thingRequestGroup]++;
                     }
                 }
             }
+            __instance.thingListChangedCallbacks?.onThingRemoved?.Invoke(t);
             return false;
         }
 

@@ -19,8 +19,9 @@ namespace RimThreaded.RW_Patches
 
         public static bool WorldObjectsHolderTick(WorldObjectsHolder __instance)
         {
-            worldObjectsTickList = __instance.worldObjects;
-            worldObjectsTicks = __instance.worldObjects.Count;
+            // 1.6: vanilla ticks a snapshot (tmpWorldObjects) with WorldObject.DoTick(); the live list may change while workers tick.
+            worldObjectsTickList = new List<WorldObject>(__instance.worldObjects);
+            worldObjectsTicks = worldObjectsTickList.Count;
             return false;
         }
 
@@ -49,7 +50,7 @@ namespace RimThreaded.RW_Patches
                 WorldObject worldObject = worldObjectsTickList[index];
                 try
                 {
-                    worldObject.Tick();
+                    worldObject.DoTick();
                 }
                 catch (Exception ex)
                 {

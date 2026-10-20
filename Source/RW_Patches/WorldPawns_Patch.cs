@@ -81,7 +81,7 @@ namespace RimThreaded.RW_Patches
                 __instance.pawnsDead = newPawnsDead;
 
                 HashSet<Pawn> newPawnsForcefullyKeptAsWorldPawns = new HashSet<Pawn>(__instance.pawnsForcefullyKeptAsWorldPawns);
-                newPawnsDead.Remove(p);
+                newPawnsForcefullyKeptAsWorldPawns.Remove(p); // 1.4 bug: removed from newPawnsDead a second time instead
                 __instance.pawnsForcefullyKeptAsWorldPawns = newPawnsForcefullyKeptAsWorldPawns;
 
                 p.becameWorldPawnTickAbs = -1;
@@ -175,6 +175,7 @@ namespace RimThreaded.RW_Patches
 
         public static bool WorldPawnsTick(WorldPawns __instance)
         {
+            worldPawnsInstance = __instance;
             worldPawnsAlive = __instance.pawnsAlive.ToList();
             worldPawnsTicks = worldPawnsAlive.Count;
 
@@ -215,6 +216,7 @@ namespace RimThreaded.RW_Patches
         }
 
         public static List<Pawn> worldPawnsAlive;
+        public static WorldPawns worldPawnsInstance;
         public static int worldPawnsTicks;
 
         public static void WorldPawnsPrepare()
@@ -238,22 +240,27 @@ namespace RimThreaded.RW_Patches
                 int index = Interlocked.Decrement(ref worldPawnsTicks);
                 if (index < 0) return;
                 Pawn pawn = worldPawnsAlive[index];
+                // 1.6: Thing.DoTick() (runs Tick() and the 1.6 TickInterval(delta) cadence; calling Tick() alone skipped all interval work).
                 try
                 {
-                    pawn.Tick();
+                    pawn.DoTick();
                 }
                 catch (Exception ex)
                 {
-                    Log.ErrorOnce("Exception ticking world pawn " + pawn.ToStringSafe() + ". Suppressing further errors. " + ex, pawn.thingIDNumber ^ 1148571423);
+                    Log.ErrorOnce("Exception ticking world pawn " + pawn.ToStringSafe() + ". Suppressing further errors. " + ex, pawn.thingIDNumber ^ 0x4475CF1F);
                 }
+                // 1.6 vanilla: ShouldAutoTendTo -> DoTend + SatisfyChemicalGenes.
                 try
                 {
-                    if (!pawn.Dead && !pawn.Destroyed && pawn.IsHashIntervalTick(7500) && !pawn.IsCaravanMember() && !PawnUtility.IsTravelingInTransportPodWorldObject(pawn))
+                    if (worldPawnsInstance.ShouldAutoTendTo(pawn))
+                    {
                         TendUtility.DoTend(null, pawn, null);
+                        GeneUtility.SatisfyChemicalGenes(pawn);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Log.ErrorOnce("Exception tending to a world pawn " + pawn.ToStringSafe() + ". Suppressing further errors. " + ex, pawn.thingIDNumber ^ 8765780);
+                    Log.ErrorOnce("Exception tending to a world pawn " + pawn.ToStringSafe() + ". Suppressing further errors. " + ex, pawn.thingIDNumber ^ 0x85C154);
                 }
             }
         }

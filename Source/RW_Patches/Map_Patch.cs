@@ -35,9 +35,6 @@ namespace RimThreaded.RW_Patches
             WildPlantSpawner_Patch.wildPlantSpawnerCount = 0;
             WildPlantSpawner_Patch.wildPlantSpawnerTicksCount = 0;
             WildPlantSpawner_Patch.wildPlantSpawnerTicksCompleted = 0;
-            TradeShip_Patch.totalTradeShipTicks = 0;
-            TradeShip_Patch.totalTradeShipTicksCompleted = 0;
-            TradeShip_Patch.totalTradeShipsCount = 0;
             try
             {
                 List<Map> maps = Find.Maps;
@@ -58,7 +55,6 @@ namespace RimThreaded.RW_Patches
         {
             SteadyEnvironmentEffects_Patch.SteadyEffectTick();
             WildPlantSpawner_Patch.WildPlantSpawnerListTick();
-            TradeShip_Patch.PassingShipListTick();
         }
     }
 }
