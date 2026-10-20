@@ -226,6 +226,7 @@ namespace RimThreaded
         }
         public static void InitializeAllThreadStatics()
         {
+            ThreadStaticsGate.ready = true;
             InitThreadStatic(CellFinder_Patch.InitializeThreadStatics, "CellFinder_Patch");
             InitThreadStatic(ColoredText_Patch.InitializeThreadStatics, "ColoredText_Patch");
             InitThreadStatic(CompCauseGameCondition_Patch.InitializeThreadStatics, "CompCauseGameCondition_Patch");
@@ -489,6 +490,7 @@ namespace RimThreaded
                 RespondToSafeFunctionRequests();
                 MainPlayOneShot(); //TODO: is PlayOneShot section still needed?
             }
+            LongEventHandler_Patch.DrainWorkerActions(); // ExecuteWhenFinished calls made by worker threads during this tick
         }
 
         private static void MainPlayOneShot()

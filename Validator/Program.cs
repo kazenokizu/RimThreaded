@@ -287,6 +287,16 @@ public static class Program
                     catch (Exception e) { if (genericUsers.Count < 0) Console.WriteLine(e.Message); }
                 }
             Console.WriteLine("=== generic methods touching replaced fields (reflection scan): " + genericUsers.Count);
+            // A thread RimThreaded never initialized (like a .NET thread-pool thread in vanilla's Parallel.ForEach) calls a field-replaced
+            // method that uses a per-thread replacement (GenText.CapitalizeSentences -> tmpSbForCapitalizedSentences).
+            {
+                MethodInfo cap = AccessTools.Method(game.GetType("Verse.GenText"), "CapitalizeSentences");
+                string outcome = null;
+                var th = new Thread(() => { try { outcome = "returned \"" + cap.Invoke(null, new object[] { "hello. world", true }) + "\""; } catch (Exception e) { outcome = "FAILED " + Unwrap(e); } });
+                th.Start(); th.Join();
+                Console.WriteLine("=== fresh thread calling a field-replaced method: " + outcome);
+                if (outcome.StartsWith("FAILED")) Failures.Add("fresh-thread field-replaced call: " + outcome);
+            }
             // Vanilla static fields that are replaced must still hold their vanilla value after patching: untranspiled code (generic
             // methods) reads them. The 1.7 in-game NullReferenceException in GetAllThingsRecursively<T> came from transpiled static constructors.
             int staticChecked = 0; var nullStatics = new List<string>();

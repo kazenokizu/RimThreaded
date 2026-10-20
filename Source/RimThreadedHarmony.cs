@@ -667,6 +667,7 @@ namespace RimThreaded
 		}
 
 		public static readonly Dictionary<object, object> replaceFields = new Dictionary<object, object>();
+		static readonly MethodInfo ensureThreadStatics = Method(typeof(ThreadStaticsGate), nameof(ThreadStaticsGate.EnsureThreadStatics));
 
 		// Generic vanilla methods that use replaced static fields cannot be field-replaced themselves (their instantiations run shared code
 		// that Harmony does not reach on the 1.7 runtime; prefixes on instantiations were ignored in-game). Their call sites are redirected
@@ -688,6 +689,8 @@ namespace RimThreaded
 			// Redirecting "this.field = new ..." to a per-thread replacement left the vanilla field null for code that cannot be
 			// transpiled (generic methods, iterators of generic types), e.g. Room.ContainedThings<T> reading uniqueContainedThingsOfDef.
 			bool isConstructor = original is ConstructorInfo;
+			// per-thread replacements must exist on whatever thread runs this method (see RimThreaded.EnsureThreadStatics)
+			yield return new CodeInstruction(OpCodes.Call, ensureThreadStatics);
 			foreach (CodeInstruction codeInstruction in instructions)
 			{
 				if (Prefs.LogVerbose)
