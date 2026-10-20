@@ -1624,6 +1624,9 @@
       "ThreadStatics": [
         {
           "FieldName": "thingList"
+        },
+        {
+          "FieldName": "cellThings"
         }
       ]
     },

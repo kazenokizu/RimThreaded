@@ -20,6 +20,52 @@ namespace RimThreaded.RW_Patches
             Map(GenericDef(typeof(Room), nameof(Room.ContainedThings), 0), nameof(ContainedThings));
             Map(GenericDef(typeof(CreepJoinerUtility), nameof(CreepJoinerUtility.GetRandom), 4), nameof(CreepJoinerGetRandom));
             Map(GenericDef(typeof(PawnStyleItemChooser), "ChooseStyleItem", 3), nameof(ChooseStyleItem));
+            // generic methods that use SimplePool<T> (a Queue shared by all threads; call sites with concrete T are redirected to
+            // SimplePool_Patch<T> by RimThreadedHarmony.replaceGenericTypes, these two cannot be). 1.7 Player.log run 10:
+            // NullReferenceException in GenCollection.RemoveAll<TKey,TValue> from SituationalThoughtHandler on a worker thread.
+            Map(GenericDefFirstParam(typeof(GenCollection), "RemoveAll", typeof(Dictionary<,>)), nameof(DictionaryRemoveAll));
+            Map(GenericDefFirstParam(typeof(GenList), "ClearAndPoolValueLists", typeof(Dictionary<,>)), nameof(ClearAndPoolValueLists));
+        }
+
+        static MethodInfo GenericDefFirstParam(Type type, string name, Type firstParamGenericDef)
+        {
+            foreach (MethodInfo m in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            {
+                if (m.Name != name || !m.IsGenericMethodDefinition) continue;
+                ParameterInfo[] ps = m.GetParameters();
+                if (ps.Length > 0 && ps[0].ParameterType.IsGenericType && ps[0].ParameterType.GetGenericTypeDefinition() == firstParamGenericDef)
+                    return m;
+            }
+            return null;
+        }
+
+        // GenCollection.RemoveAll<TKey,TValue>(Dictionary, Predicate): vanilla body with a local key list instead of SimplePool.
+        public static int DictionaryRemoveAll<TKey, TValue>(Dictionary<TKey, TValue> dictionary, Predicate<KeyValuePair<TKey, TValue>> predicate)
+        {
+            List<TKey> keys = null;
+            foreach (KeyValuePair<TKey, TValue> pair in dictionary)
+            {
+                if (predicate(pair))
+                {
+                    if (keys == null) keys = new List<TKey>();
+                    keys.Add(pair.Key);
+                }
+            }
+            if (keys == null) return 0;
+            for (int i = 0; i < keys.Count; i++)
+                dictionary.Remove(keys[i]);
+            return keys.Count;
+        }
+
+        // GenList.ClearAndPoolValueLists<T,V>: same, returning the lists to the thread-safe pool the redirected Get calls use.
+        public static void ClearAndPoolValueLists<T, V>(Dictionary<T, List<V>> source)
+        {
+            foreach (List<V> list in source.Values)
+            {
+                list.Clear();
+                SimplePool_Patch<List<V>>.Return(list);
+            }
+            source.Clear();
         }
 
         static MethodInfo GenericDef(Type type, string name, int parameterCount)

@@ -387,7 +387,7 @@ namespace RimThreaded
 												TranspileFieldReplacements(method);
 												break;
 											}
-											if (codeInstruction.Value is MethodInfo methodInfo && (replaceFields.ContainsKey(methodInfo) || IsReplacedGenericCall(methodInfo)))
+											if (codeInstruction.Value is MethodInfo methodInfo && (replaceFields.ContainsKey(methodInfo) || IsReplacedGenericCall(methodInfo) || GenericTypeReplacement(methodInfo) != null))
 											{
 												AssemblyCache.AddToCache(assembly.ManifestModule.ModuleVersionId.ToString() + "_" + cacheKeySuffix, method, type);
 												TranspileFieldReplacements(method);
@@ -680,6 +680,27 @@ namespace RimThreaded
 			return m.IsGenericMethod && !m.IsGenericMethodDefinition && replaceGenericMethods.Count > 0 && replaceGenericMethods.ContainsKey(m.GetGenericMethodDefinition());
 		}
 
+		// Generic classes whose members are replaced for every concrete instantiation: a call to Original<X>.M(...) becomes
+		// Replacement<X>.M(...) (same name and parameter types). SimplePool<T> is a plain Queue shared by all threads; the explicit
+		// per-type entries in SimplePool_Patch_RunNonDestructivePatches covered only some T.
+		public static readonly Dictionary<Type, Type> replaceGenericTypes = new Dictionary<Type, Type>
+		{
+			{ typeof(SimplePool<>), typeof(RW_Patches.SimplePool_Patch<>) },
+			{ typeof(ContentFinder<>), typeof(RW_Patches.ContentFinder_Patch<>) }
+		};
+
+		internal static MethodInfo GenericTypeReplacement(MethodInfo m)
+		{
+			Type declaring = m.DeclaringType;
+			if (declaring == null || !declaring.IsGenericType || declaring.ContainsGenericParameters)
+				return null;
+			if (!replaceGenericTypes.TryGetValue(declaring.GetGenericTypeDefinition(), out Type replacementDef))
+				return null;
+			Type replacementType = replacementDef.MakeGenericType(declaring.GetGenericArguments());
+			Type[] parameterTypes = m.GetParameters().Select(p => p.ParameterType).ToArray();
+			return replacementType.GetMethod(m.Name, BindingFlags.Public | BindingFlags.Static, null, parameterTypes, null);
+		}
+
 		public static HashSet<object> notifiedObjects = new HashSet<object>();
 
 		public static IEnumerable<CodeInstruction> ReplaceFieldsTranspiler(IEnumerable<CodeInstruction> instructions, ILGenerator iLGenerator, MethodBase original)
@@ -704,6 +725,12 @@ namespace RimThreaded
 					if (replacement.IsStatic && codeInstruction.opcode == OpCodes.Callvirt)
 						codeInstruction.opcode = OpCodes.Call; // instance method -> static taking the instance as first argument
 					codeInstruction.operand = replacement;
+					yield return codeInstruction;
+					continue;
+				}
+				if (operand is MethodInfo calledOnGenericType && GenericTypeReplacement(calledOnGenericType) is MethodInfo typeReplacement)
+				{
+					codeInstruction.operand = typeReplacement; // static -> static, same signature
 					yield return codeInstruction;
 					continue;
 				}

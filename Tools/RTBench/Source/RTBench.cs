@@ -15,11 +15,29 @@ namespace RTBench
         internal static string save;
         internal static double warmup = 30, duration = 120, interval = 10;
         internal static bool active;
-        internal static int colonists, meals;
+        internal static int colonists, meals, rawFood;
         internal static bool noIncidents;
 
         // noincidents=1: no raids, events or quest incidents, so every run measures a colony of the same size
         public static bool BlockIncident(ref bool __result) { __result = false; return false; }
+
+        // what happened during the run: incidents that fired and every death with its cause
+        internal static int incidents, deaths, colonistDeaths;
+        public static void IncidentDone(IncidentWorker __instance, bool __result)
+        {
+            if (!__result) return;
+            System.Threading.Interlocked.Increment(ref incidents);
+            Log.Message("[RTBENCH] incident " + __instance.def?.defName + " at tick " + Find.TickManager.TicksGame);
+        }
+        public static void PawnKilled(Pawn __instance, DamageInfo? dinfo, Hediff exactCulprit)
+        {
+            System.Threading.Interlocked.Increment(ref deaths);
+            bool colonist = __instance.Faction == Faction.OfPlayer && __instance.RaceProps.Humanlike;
+            if (colonist) System.Threading.Interlocked.Increment(ref colonistDeaths);
+            if (colonist || __instance.RaceProps.Humanlike)
+                Log.Message("[RTBENCH] death " + __instance.LabelShort + (colonist ? " (colonist)" : " (" + __instance.Faction?.Name + ")")
+                    + " cause=" + (exactCulprit?.def?.defName ?? dinfo?.Def?.defName ?? "unknown") + " at tick " + Find.TickManager.TicksGame);
+        }
 
         static int rootPlayStarts, loadGameCalls;
         public static void RootPlayStart() { Log.Message("[RTBENCH] Root_Play.Start #" + (++rootPlayStarts) + "\n" + new StackTrace(1, false)); }
@@ -42,9 +60,10 @@ namespace RTBench
                 else if (k == "interval") interval = double.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
                 else if (k == "colonists") colonists = int.Parse(v);
                 else if (k == "meals") meals = int.Parse(v);
+                else if (k == "rawfood") rawFood = int.Parse(v);
                 else if (k == "noincidents") noIncidents = v == "1" || v == "true";
             }
-            Log.Message("[RTBENCH] config: save=" + (save ?? "(none)") + " warmup=" + warmup + " duration=" + duration + " interval=" + interval + " colonists=+" + colonists + " meals=" + meals + " noincidents=" + noIncidents
+            Log.Message("[RTBENCH] config: save=" + (save ?? "(none)") + " warmup=" + warmup + " duration=" + duration + " interval=" + interval + " colonists=+" + colonists + " meals=" + meals + " rawfood=" + rawFood + " noincidents=" + noIncidents
                 + " rimthreaded=" + (ModLister.GetActiveModWithIdentifier("majorhoff.rimthreaded") != null));
             // diagnostics: where null references are thrown (first chance, before any catch hides the frames); first 20 only
             int nre = 0;
@@ -59,6 +78,8 @@ namespace RTBench
             h.Patch(HarmonyLib.AccessTools.Method(typeof(GameDataSaveLoader), "LoadGame", new[] { typeof(string) }), prefix: new HarmonyLib.HarmonyMethod(typeof(RTBenchStartup), nameof(LoadGameCalled)));
             if (noIncidents)
                 h.Patch(HarmonyLib.AccessTools.Method(typeof(RimWorld.IncidentWorker), "TryExecute"), prefix: new HarmonyLib.HarmonyMethod(typeof(RTBenchStartup), nameof(BlockIncident)));
+            h.Patch(HarmonyLib.AccessTools.Method(typeof(IncidentWorker), "TryExecute"), postfix: new HarmonyLib.HarmonyMethod(typeof(RTBenchStartup), nameof(IncidentDone)));
+            h.Patch(HarmonyLib.AccessTools.Method(typeof(Pawn), "Kill"), postfix: new HarmonyLib.HarmonyMethod(typeof(RTBenchStartup), nameof(PawnKilled)));
             if (!string.IsNullOrEmpty(save))
                 LongEventHandler.ExecuteWhenFinished(() => GameDataSaveLoader.LoadGame(save));
         }
@@ -90,7 +111,15 @@ namespace RTBench
                 left -= meal.stackCount;
                 GenPlace.TryPlaceThing(meal, center, map, ThingPlaceMode.Near);
             }
-            Log.Message("[RTBENCH] colony prepared: +" + RTBenchStartup.colonists + " colonists, " + RTBenchStartup.meals + " meals; colonists now " + map.mapPawns.FreeColonistsCount + ", pawns " + map.mapPawns.AllPawnsSpawnedCount);
+            left = RTBenchStartup.rawFood;
+            while (left > 0)
+            {
+                Thing food = ThingMaker.MakeThing(ThingDefOf.RawPotatoes);
+                food.stackCount = Math.Min(left, food.def.stackLimit);
+                left -= food.stackCount;
+                GenPlace.TryPlaceThing(food, center, map, ThingPlaceMode.Near);
+            }
+            Log.Message("[RTBENCH] colony prepared: +" + RTBenchStartup.colonists + " colonists, " + RTBenchStartup.meals + " meals, " + RTBenchStartup.rawFood + " raw potatoes; colonists now " + map.mapPawns.FreeColonistsCount + ", pawns " + map.mapPawns.AllPawnsSpawnedCount);
         }
 
         Stopwatch clock;
@@ -147,7 +176,7 @@ namespace RTBench
             {
                 done = true;
                 double span = t - RTBenchStartup.warmup;
-                Log.Message($"[RTBENCH] RESULT ticks={tm.TicksGame - startTicks} seconds={span:F1} avg_tps={(tm.TicksGame - startTicks) / span:F1} avg_fps={frames / span:F1} colonists_end={Find.CurrentMap?.mapPawns.FreeColonistsCount} pawns_end={Find.CurrentMap?.mapPawns.AllPawnsSpawnedCount}");
+                Log.Message($"[RTBENCH] RESULT ticks={tm.TicksGame - startTicks} seconds={span:F1} avg_tps={(tm.TicksGame - startTicks) / span:F1} avg_fps={frames / span:F1} colonists_end={Find.CurrentMap?.mapPawns.FreeColonistsCount} pawns_end={Find.CurrentMap?.mapPawns.AllPawnsSpawnedCount} incidents={RTBenchStartup.incidents} deaths={RTBenchStartup.deaths} colonist_deaths={RTBenchStartup.colonistDeaths}");
                 Root.Shutdown();
             }
         }
