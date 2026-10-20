@@ -167,8 +167,8 @@ namespace RimThreaded
 			ConstructorInfo threadStaticConstructor = typeof(ThreadStaticAttribute).GetConstructor(new Type[0]);
 			CustomAttributeBuilder attributeBuilder = new CustomAttributeBuilder(threadStaticConstructor, new object[0]);
 			AssemblyName aName = new AssemblyName("RimThreadedReplacements");
-			AssemblyBuilder ab = AppDomain.CurrentDomain.DefineDynamicAssembly(aName, AssemblyBuilderAccess.RunAndSave);
-			ModuleBuilder modBuilder = ab.DefineDynamicModule(aName.Name, aName.Name + ".dll");
+			AssemblyBuilder ab = AssemblyBuilder.DefineDynamicAssembly(aName, AssemblyBuilderAccess.Run);
+			ModuleBuilder modBuilder = ab.DefineDynamicModule(aName.Name);
 			foreach (ClassReplacement classReplacement in replacements.ClassReplacements)
 			{
 				Type type = TypeByName(classReplacement.ClassName);
@@ -183,6 +183,7 @@ namespace RimThreaded
 					TypeBuilder tb = modBuilder.DefineType(type.Name + "_Replacement", TypeAttributes.Public);
 					MethodBuilder mb = tb.DefineMethod("InitializeThreadStatics", MethodAttributes.Public | MethodAttributes.Static, typeof(void), Type.EmptyTypes);
 					ILGenerator il = mb.GetILGenerator();
+					List<KeyValuePair<FieldInfo, string>> builderFields = new List<KeyValuePair<FieldInfo, string>>();
 					foreach (ThreadStaticDetail threadStaticDetail in classReplacement.ThreadStatics)
 					{
 						FieldInfo fieldInfo = Field(type, threadStaticDetail.FieldName);
@@ -197,6 +198,7 @@ namespace RimThreaded
 							FieldBuilder fb = tb.DefineField(fieldInfo.Name, fieldInfo.FieldType, FieldAttributes.Public | FieldAttributes.Static);
 							fb.SetCustomAttribute(attributeBuilder);
 							replacementField = fb;
+							builderFields.Add(new KeyValuePair<FieldInfo, string>(fieldInfo, fb.Name));
 						}
 						else
 						{
@@ -226,14 +228,15 @@ namespace RimThreaded
 					}
 					il.Emit(OpCodes.Ret);
 					Type newFieldType = tb.CreateType();
+					// FieldBuilder objects are only valid while the type is being emitted; transpilers need the real runtime fields
+					foreach (KeyValuePair<FieldInfo, string> builderField in builderFields)
+					{
+						replaceFields[builderField.Key] = newFieldType.GetField(builderField.Value, BindingFlags.Public | BindingFlags.Static);
+					}
 					MethodInfo mb2 = Method(newFieldType, "InitializeThreadStatics");
 					HarmonyMethod pf = new HarmonyMethod(mb2);
 					harmony.Patch(initializer, postfix: pf);
 				}
-			}
-			if (Prefs.LogVerbose)
-			{
-				ab.Save(aName.Name + ".dll");
 			}
 		}
 		public static Dictionary<Type, HashSet<FieldInfo>> untouchedStaticFields = new Dictionary<Type, HashSet<FieldInfo>>();
@@ -729,16 +732,61 @@ namespace RimThreaded
 				}
 				Log.Message("RimThreaded is done TranspilingFieldReplacements for method: " + original.DeclaringType.FullName + "." + original.Name);
 			}
-			harmony.Patch(original, transpiler: replaceFieldsHarmonyTranspiler);
+			try
+			{
+				harmony.Patch(original, transpiler: replaceFieldsHarmonyTranspiler);
+			}
+			catch (Exception e)
+			{
+				LogPatchFailure("FieldReplacements", original?.DeclaringType, null, original?.Name, e);
+			}
+		}
+
+		public static int patchFailureCount;
+		internal static string DescribeException(Exception e)
+		{
+			while ((e is TargetInvocationException || e is TypeInitializationException) && e.InnerException != null)
+				e = e.InnerException;
+			string message = e.Message ?? "";
+			int newline = message.IndexOf('\n');
+			if (newline > 0) message = message.Substring(0, newline);
+			string[] frames = (e.StackTrace ?? "").Split('\n');
+			return e.GetType().Name + ": " + message + (frames.Length > 0 ? " @ " + string.Join(" <- ", frames.Take(4).Select(f => f.Trim())) : "");
+		}
+		internal static void LogPatchFailure(string kind, Type original, Type patched, string methodName, Exception e)
+		{
+			Interlocked.Increment(ref patchFailureCount);
+			Log.Error("RimThreaded PATCH FAILED [" + kind + "] " + (original != null ? original.FullName : "?") + "." + methodName
+				+ (patched != null ? " using " + patched.Name : "") + " : " + DescribeException(e));
 		}
 
 		public static void TranspileLockAdd3(Type original, string methodName, Type[] origType = null)
 		{
-			harmony.Patch(Method(original, methodName, origType), transpiler: add3Transpiler);
+			try
+			{
+				harmony.Patch(Method(original, methodName, origType), transpiler: add3Transpiler);
+			}
+			catch (Exception e)
+			{
+				LogPatchFailure("LockAdd3", original, null, methodName, e);
+			}
 		}
 		public static void Prefix(Type original, Type patched, string methodName, Type[] origType = null, bool destructive = true, int priority = 0, string finalizer = null, string PatchMethod = null, bool NullPatchType = false)
 		{
+			try
+			{
+				PrefixInternal(original, patched, methodName, origType, destructive, priority, finalizer, PatchMethod, NullPatchType);
+			}
+			catch (Exception e)
+			{
+				LogPatchFailure("Prefix", original, patched, methodName, e);
+			}
+		}
+		private static void PrefixInternal(Type original, Type patched, string methodName, Type[] origType, bool destructive, int priority, string finalizer, string PatchMethod, bool NullPatchType)
+		{
 			MethodInfo oMethod = Method(original, methodName, origType);
+			if (oMethod == null)
+				throw new MissingMethodException("target method not found in 1.6 assembly");
 
 			Type[] patch_type = null;
 			if (origType != null)
@@ -771,6 +819,8 @@ namespace RimThreaded
             {
 				pMethod = Method(patched, PatchMethod, patch_type);
 			}
+			if (pMethod == null)
+				throw new MissingMethodException("patch method " + (PatchMethod ?? methodName) + " not found in " + patched.Name);
 
 			MethodInfo Finalizer;
 			HarmonyMethod FinalizerH = null;
@@ -789,55 +839,66 @@ namespace RimThreaded
 
 		public static void Postfix(Type original, Type patched, string originalMethodName, string patchedMethodName = null)
 		{
-			MethodInfo oMethod = Method(original, originalMethodName);
-			if (patchedMethodName == null)
-				patchedMethodName = originalMethodName;
-			MethodInfo pMethod = Method(patched, patchedMethodName);
-			harmony.Patch(oMethod, postfix: new HarmonyMethod(pMethod));
+			try
+			{
+				MethodInfo oMethod = Method(original, originalMethodName);
+				if (oMethod == null)
+					throw new MissingMethodException("target method not found in 1.6 assembly");
+				if (patchedMethodName == null)
+					patchedMethodName = originalMethodName;
+				MethodInfo pMethod = Method(patched, patchedMethodName);
+				if (pMethod == null)
+					throw new MissingMethodException("patch method " + patchedMethodName + " not found in " + patched.Name);
+				harmony.Patch(oMethod, postfix: new HarmonyMethod(pMethod));
+			}
+			catch (Exception e)
+			{
+				LogPatchFailure("Postfix", original, patched, originalMethodName, e);
+			}
 		}
 
 		public static void Transpile(Type original, Type patched, string methodName, Type[] origType = null, string[] harmonyAfter = null, int priority = 0, string patchMethod = null)
 		{
-			MethodInfo oMethod = Method(original, methodName, origType);
-			MethodInfo pMethod = Method(patched, methodName);
-			if (patchMethod != null)
-				pMethod = Method(patched, patchMethod);
-			HarmonyMethod transpilerMethod = new HarmonyMethod(pMethod, priority)
-			{
-				after = harmonyAfter
-			};
-			try
-			{
-				harmony.Patch(oMethod, transpiler: transpilerMethod);
-			}
-			catch (Exception e)
-			{
-				Log.Error("Exception Transpiling: " + oMethod.ToString() + " " + transpilerMethod.ToString() + " " + e.ToString());
-			}
+			TranspileInternal(original, patched, methodName, methodName, origType, harmonyAfter, priority, patchMethod);
 		}
 		public static void Transpile(Type original, Type patched, string methodName, string newMethodName, Type[] origType = null, string[] harmonyAfter = null, int priority = 0, string patchMethod = null)
 		{
-			MethodInfo oMethod = Method(original, methodName, origType);
-			MethodInfo pMethod = Method(patched, newMethodName);
-			if (patchMethod != null)
-				pMethod = Method(patched, patchMethod);
-			HarmonyMethod transpilerMethod = new HarmonyMethod(pMethod, priority)
-			{
-				after = harmonyAfter
-			};
+			TranspileInternal(original, patched, methodName, newMethodName, origType, harmonyAfter, priority, patchMethod);
+		}
+		private static void TranspileInternal(Type original, Type patched, string methodName, string newMethodName, Type[] origType, string[] harmonyAfter, int priority, string patchMethod)
+		{
 			try
 			{
+				MethodInfo oMethod = Method(original, methodName, origType);
+				if (oMethod == null)
+					throw new MissingMethodException("target method not found in 1.6 assembly");
+				MethodInfo pMethod = Method(patched, patchMethod ?? newMethodName);
+				if (pMethod == null)
+					throw new MissingMethodException("transpiler " + (patchMethod ?? newMethodName) + " not found in " + patched.Name);
+				HarmonyMethod transpilerMethod = new HarmonyMethod(pMethod, priority)
+				{
+					after = harmonyAfter
+				};
 				harmony.Patch(oMethod, transpiler: transpilerMethod);
 			}
 			catch (Exception e)
 			{
-				Log.Error("Exception Transpiling: " + oMethod.ToString() + " " + transpilerMethod.ToString() + " " + e.ToString());
+				LogPatchFailure("Transpile", original, patched, methodName, e);
 			}
 		}
 		public static void TranspileMethodLock(Type original, string methodName, Type[] origType = null)
 		{
-			MethodInfo oMethod = Method(original, methodName, origType);
-			harmony.Patch(oMethod, transpiler: methodLockTranspiler);
+			try
+			{
+				MethodInfo oMethod = Method(original, methodName, origType);
+				if (oMethod == null)
+					throw new MissingMethodException("target method not found in 1.6 assembly");
+				harmony.Patch(oMethod, transpiler: methodLockTranspiler);
+			}
+			catch (Exception e)
+			{
+				LogPatchFailure("MethodLock", original, null, methodName, e);
+			}
 		}
 
 

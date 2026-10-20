@@ -365,3 +365,6 @@ Dependencies/*/*.dll
 Dependencies/*/*.hash
 RimWorldSource/
 RimThreaded/1.4/
+Validator/bin/
+Validator/obj/
+Validator/run/
