@@ -292,9 +292,32 @@ namespace RimThreaded
 		public static HashSet<string> fieldFullNames = new HashSet<string>();
 		public static HashSet<string> allStaticFieldNames = new HashSet<string>();
 		//public static bool intializersReady = false;
+		private static string ReplacementSetHash()
+		{
+			List<string> keys = new List<string>();
+			foreach (object k in replaceFields.Keys)
+			{
+				if (k is MemberInfo m)
+					keys.Add(m.DeclaringType?.FullName + "::" + m.Name + (m is MethodBase mb ? "(" + string.Join(",", mb.GetParameters().Select(p => p.ParameterType.FullName)) + ")" : ""));
+				else
+					keys.Add(k?.ToString());
+			}
+			keys.Sort(StringComparer.Ordinal);
+			keys.Add(typeof(RimThreadedHarmony).Assembly.ManifestModule.ModuleVersionId.ToString());
+			using (System.Security.Cryptography.SHA1 sha = System.Security.Cryptography.SHA1.Create())
+			{
+				byte[] hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", keys)));
+				return BitConverter.ToString(hash, 0, 6).Replace("-", "").ToLowerInvariant();
+			}
+		}
+
 		private static void ApplyFieldReplacements()
 		{
 			List<MethodBase> MethodsFromCache = new List<MethodBase>();
+			// 1.6 port: the cache of "methods that touch a replaced field" was keyed only by the game assembly's MVID, so after a change to
+			// replacements_*.json (or to fields added in code) a stale list was reused and methods touching the new fields were never
+			// transpiled. The key now also covers the replaced-field set and this RimThreaded build.
+			string cacheKeySuffix = ReplacementSetHash();
 			HashSet<string> AssembliesToPatch = new HashSet<string>()
 			{
 				"Assembly-CSharp.dll",
@@ -311,7 +334,7 @@ namespace RimThreaded
 					{
                         Log.Message("RimThreaded is attempting to load replacements from cache for assembly: " + assembly.FullName);
 					}
-					if (AssemblyCache.TryGetFromCache(assembly.ManifestModule.ModuleVersionId.ToString(), out MethodsFromCache))
+					if (AssemblyCache.TryGetFromCache(assembly.ManifestModule.ModuleVersionId.ToString() + "_" + cacheKeySuffix, out MethodsFromCache))
 					{
 						foreach (MethodBase method in MethodsFromCache)
 						{
@@ -342,13 +365,13 @@ namespace RimThreaded
 										{
 											if (codeInstruction.Value is FieldInfo fieldInfo && replaceFields.ContainsKey(fieldInfo))
 											{
-												AssemblyCache.AddToCache(assembly.ManifestModule.ModuleVersionId.ToString(), method, type);
+												AssemblyCache.AddToCache(assembly.ManifestModule.ModuleVersionId.ToString() + "_" + cacheKeySuffix, method, type);
 												TranspileFieldReplacements(method);
 												break;
 											}
 											if (codeInstruction.Value is MethodInfo methodInfo && replaceFields.ContainsKey(methodInfo))
 											{
-												AssemblyCache.AddToCache(assembly.ManifestModule.ModuleVersionId.ToString(), method, type);
+												AssemblyCache.AddToCache(assembly.ManifestModule.ModuleVersionId.ToString() + "_" + cacheKeySuffix, method, type);
 												TranspileFieldReplacements(method);
 												break;
 											}
