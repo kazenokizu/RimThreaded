@@ -994,7 +994,6 @@ namespace RimThreaded
 			CompCauseGameCondition_Patch.RunDestructivePatches(); //TODO - ThreadSafeLinkedList
 			CompSpawnSubplant_Transpile.RunDestructivePatches(); //could use interlock instead
 			Corpse_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			DateNotifier_Patch.RunDestructivePatches(); //performance boost when playing on only 1 map
 			DesignationManager_Patch.RunDestructivePatches(); //added for development build
 			District_Patch.RunDestructivePatches(); // 1.3 fix for cachedOpenRoofState null ref - TODO - optimize locks
 			DrugAIUtility_Patch.RunDestructivePatches(); //vanilla bug
@@ -1019,7 +1018,6 @@ namespace RimThreaded
 			GridsUtility_Patch.RunDestructivePatches(); // 1.3 explosion fix
 			
 			//GrammarResolver_Patch.RunDestructivePatches();
-			HediffGiver_Heat_Patch.RunDestructivePatches(); //perf improvment
             
 			HediffSet_Patch.RunDestructivePatches();
 			HistoryEventsManager_Patch.RunDestructivePatches(); // 1.3 explosion fix
@@ -1054,7 +1052,6 @@ namespace RimThreaded
 			Reachability_Patch.RunDestructivePatches();
 			ReachabilityCache_Patch.RunDestructivePatches(); //TODO simplfy instance.fields
 			RealtimeMoteList_Patch.RunDestructivePatches();
-			RecipeWorkerCounter_Patch.RunDestructivePatches(); // rexamine purpose
             RecordWorker_TimeGettingJoy_Patch.RunDestructivePatches();
 			RegionAndRoomUpdater_Patch.RunDestructivePatches();
 			RegionDirtyer_Patch.RunDestructivePatches();
@@ -1064,8 +1061,6 @@ namespace RimThreaded
 			ResourceCounter_Patch.RunDestructivePatches();
 			//RoofGrid_Patch is causing problems to the roof notification in 1.3 a fix is also inside the Patch in case  this is needed for something else I am commenting this for now -Senior
 			RulePackDef_Patch.RunDestructivePatches(); //explosions fix - grammar
-			SeasonUtility_Patch.RunDestructivePatches(); //performance boost
-			ShootLeanUtility_Patch.RunDestructivePatches(); //TODO: excessive locks, therefore RimThreadedHarmony.Prefix, conncurrent_queue could be transpiled in
 			SteadyEnvironmentEffects_Patch.RunDestructivePatches();
 			StoreUtility_Patch.RunDestructivePatches(); // 1.3 explosion
 			StoryState_Patch.RunDestructivePatches(); //WrapMethodInInstanceLock

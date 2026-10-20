@@ -11,7 +11,7 @@ namespace RimThreaded.RW_Patches
     {
         public static bool WorldComponentTick(World world)
         {
-            worldComponents = world.components;
+            worldComponents = new List<WorldComponent>(world.components); // snapshot for the workers
             worldComponentTicks = worldComponents.Count;
             return false;
         }

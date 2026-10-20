@@ -1,4 +1,4 @@
-using HarmonyLib;
+﻿using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -94,14 +94,26 @@ namespace RimThreaded.RW_Patches
                         yield return p;
                     }
 
+                    // 1.6: null relation targets are skipped and virtual relations are followed (vanilla PotentiallyRelatedPawns).
                     List<DirectPawnRelation> directRel = p.relations.directRelations;
                     for (int i = 0; i < directRel.Count; i++)
                     {
                         Pawn otherPawn = directRel[i].otherPawn;
-                        if (!visited.Contains(otherPawn))
+                        if (otherPawn != null && !visited.Contains(otherPawn))
                         {
                             stack.Add(otherPawn);
                             visited.Add(otherPawn);
+                        }
+                    }
+                    foreach (VirtualPawnRelation virtualRelation in p.relations.VirtualRelations)
+                    {
+                        foreach (Pawn reference in virtualRelation.record.References)
+                        {
+                            if (reference != __instance.pawn && reference != null && !visited.Contains(reference))
+                            {
+                                stack.Add(reference);
+                                visited.Add(reference);
+                            }
                         }
                     }
 

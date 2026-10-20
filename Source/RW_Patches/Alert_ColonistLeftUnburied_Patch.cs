@@ -38,7 +38,8 @@ namespace RimThreaded.RW_Patches
                 __result = false;
                 return false;
             }
-            __result = InnerPawn.Faction == Faction.OfPlayer && race.Humanlike && !InnerPawn.IsQuestLodger() && !InnerPawn.IsSlave && !corpse.IsInAnyStorage();
+            // 1.6 logic (null-safe): subhumans and shamblers excluded, corpse must be spawned.
+            __result = InnerPawn.Faction == Faction.OfPlayer && race.Humanlike && !InnerPawn.IsQuestLodger() && !InnerPawn.IsSlave && !InnerPawn.IsSubhuman && !InnerPawn.IsShambler && corpse.Spawned;
             return false;
         }
     }

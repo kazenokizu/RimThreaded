@@ -18,15 +18,22 @@ namespace RimThreaded.RW_Patches
 
         public static bool TryIssueJobPackage(ThinkNode_SubtreesByTag __instance, ref ThinkResult __result, Pawn pawn, JobIssueParams jobParams)
         {
-            List<ThinkTreeDef> matchedTrees = new List<ThinkTreeDef>();
-            foreach (ThinkTreeDef allDef in DefDatabase<ThinkTreeDef>.AllDefs)
+            // Same as vanilla, but the lazily built list is filled locally and published complete (vanilla assigns the field first and fills it
+            // afterwards, so another thread could see a partially filled list). Built once and reused, like vanilla.
+            List<ThinkTreeDef> matchedTrees = __instance.matchedTrees;
+            if (matchedTrees == null)
             {
-                if (allDef.insertTag == __instance.insertTag)
+                List<ThinkTreeDef> built = new List<ThinkTreeDef>();
+                foreach (ThinkTreeDef allDef in DefDatabase<ThinkTreeDef>.AllDefs)
                 {
-                    matchedTrees.Add(allDef);
+                    if (allDef.insertTag == __instance.insertTag)
+                    {
+                        built.Add(allDef);
+                    }
                 }
+                matchedTrees = built.OrderByDescending((tDef) => tDef.insertPriority).ToList();
+                __instance.matchedTrees = matchedTrees;
             }
-            matchedTrees = matchedTrees.OrderByDescending((tDef) => tDef.insertPriority).ToList();
 
             ThinkTreeDef thinkTreeDef;
             for (int i = 0; i < matchedTrees.Count; i++)

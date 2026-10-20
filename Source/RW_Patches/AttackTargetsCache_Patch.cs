@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using RimWorld;
 using Verse;
@@ -6,187 +6,116 @@ using Verse.AI;
 
 namespace RimThreaded.RW_Patches
 {
-
+    // 1.6 port. The 1.4 patch kept targets in private per-cache dictionaries, but the unpatched vanilla Notify_FactionHostilityChanged iterates
+    // the vanilla allTargets set (empty under that patch), so faction hostility changes never re-sorted targets; Notify_FactionAdded/Removed
+    // also only touched vanilla storage; GetPotentialTargetsFor lacked the 1.6 slave-rebellion branch.
+    // Now: vanilla storage and logic. Mutations run under lock(cache) and publish new sets/dictionaries (copy-on-write), so the live set that
+    // TargetsHostileToFaction returns is never modified while a reader iterates it. Methods that used vanilla's static scratch lists (shared by
+    // every map and thread) use local lists. The old patch is in removed_1.6/.
     public class AttackTargetsCache_Patch
     {
-        private static readonly List<IAttackTarget> EmptyList = new List<IAttackTarget>();
-        private static readonly HashSet<IAttackTarget> EmptySet = new HashSet<IAttackTarget>();
-
-        private static readonly Dictionary<AttackTargetsCache, Dictionary<Faction, List<IAttackTarget>>> TargetsHostileToFactionDict =
-            new Dictionary<AttackTargetsCache, Dictionary<Faction, List<IAttackTarget>>>();
-        private static readonly Dictionary<AttackTargetsCache, List<Pawn>> PawnsInAggroMentalStateDict =
-            new Dictionary<AttackTargetsCache, List<Pawn>>();
-        private static readonly Dictionary<AttackTargetsCache, List<Pawn>> FactionlessHumanlikesDict =
-            new Dictionary<AttackTargetsCache, List<Pawn>>();
-        private static readonly Dictionary<AttackTargetsCache, List<IAttackTarget>> AllTargetsListDict =
-            new Dictionary<AttackTargetsCache, List<IAttackTarget>>();
-
         public static void RunDestructivesPatches()
         {
             Type original = typeof(AttackTargetsCache);
             Type patched = typeof(AttackTargetsCache_Patch);
-            RimThreadedHarmony.Prefix(original, patched, nameof(GetPotentialTargetsFor));
             RimThreadedHarmony.Prefix(original, patched, nameof(RegisterTarget));
             RimThreadedHarmony.Prefix(original, patched, nameof(DeregisterTarget));
-            RimThreadedHarmony.Prefix(original, patched, nameof(TargetsHostileToFaction));
-            RimThreadedHarmony.Prefix(original, patched, nameof(UpdateTarget));
-        }
-
-        public static bool DeregisterTarget(AttackTargetsCache __instance, IAttackTarget target)
-        {
-            if (!AllTargetsListDict.TryGetValue(__instance, out List<IAttackTarget> snapshotAllTargets)) return false;
-            if (!snapshotAllTargets.Contains(target))
-            {
-                Log.Warning("Tried to deregister " + target + " but it's not in " + __instance.GetType());
-                return false;
-            }
-            lock (AllTargetsListDict)
-            {
-                List<IAttackTarget> newAllTargets = new List<IAttackTarget>(snapshotAllTargets);
-                newAllTargets.Remove(target);
-                AllTargetsListDict[__instance] = newAllTargets;
-            }
-
-            Dictionary<Faction, List<IAttackTarget>> targetsHostileToFaction = getTargetsHostileToFactionList(__instance);
-            List<Faction> allFactionsListForReading = Find.FactionManager.AllFactionsListForReading;
-            for (int i = 0; i < allFactionsListForReading.Count; i++)
-            {
-                Faction faction = allFactionsListForReading[i];
-                if (!targetsHostileToFaction.TryGetValue(faction, out List<IAttackTarget> hostileTargets)) continue;
-                if (!hostileTargets.Contains(target)) continue;
-                lock (targetsHostileToFaction)
-                {
-                    targetsHostileToFaction.TryGetValue(faction, out List<IAttackTarget> hostileTargets2);
-                    if (hostileTargets2 == null || !hostileTargets2.Contains(target)) continue;
-                    List<IAttackTarget> newHostileTargets = new List<IAttackTarget>(hostileTargets2);
-                    newHostileTargets.Remove(target);
-                    targetsHostileToFaction[faction] = newHostileTargets;
-                }
-            }
-
-            if (!(target is Pawn pawn)) return false;
-            lock (PawnsInAggroMentalStateDict)
-            {
-                if (PawnsInAggroMentalStateDict.TryGetValue(__instance, out List<Pawn> pawnsInAggroMentalStateList))
-                {
-                    if (pawnsInAggroMentalStateList.Contains(pawn))
-                    {
-                        List<Pawn> newPawnsInAggroMentalStateList = new List<Pawn>(pawnsInAggroMentalStateList);
-                        newPawnsInAggroMentalStateList.Remove(pawn);
-                        PawnsInAggroMentalStateDict[__instance] = newPawnsInAggroMentalStateList;
-                    }
-                }
-            }
-            lock (FactionlessHumanlikesDict)
-            {
-                if (!FactionlessHumanlikesDict.TryGetValue(__instance, out List<Pawn> factionlessHumanlikesList) ||
-                    !factionlessHumanlikesList.Contains(pawn))
-                    return false;
-                List<Pawn> newFactionlessHumanlikesList = new List<Pawn>(factionlessHumanlikesList);
-                newFactionlessHumanlikesList.Remove(pawn);
-                FactionlessHumanlikesDict[__instance] = newFactionlessHumanlikesList;
-            }
-
-            return false;
+            RimThreadedHarmony.Prefix(original, patched, nameof(GetPotentialTargetsFor));
+            RimThreadedHarmony.Prefix(original, patched, nameof(Notify_FactionHostilityChanged));
+            RimThreadedHarmony.Prefix(original, patched, nameof(Notify_FactionAdded));
+            RimThreadedHarmony.Prefix(original, patched, nameof(Notify_FactionRemoved));
+            RimThreadedHarmony.TranspileMethodLock(original, nameof(AttackTargetsCache.UpdateTarget));
         }
 
         public static bool RegisterTarget(AttackTargetsCache __instance, IAttackTarget target)
         {
-            Thing thing = target.Thing;
-
-            if (!thing.Spawned)
+            lock (__instance)
             {
-                Log.Warning("Tried to register unspawned thing " + thing.ToStringSafe() + " in " + __instance.GetType());
-                return false;
-            }
-
-            if (thing.Map != __instance.map)
-            {
-                Log.Warning("Tried to register attack target " + thing.ToStringSafe() + " but its Map is not this one.");
-                return false;
-            }
-
-            lock (AllTargetsListDict)
-            {
-                if (AllTargetsListDict.TryGetValue(__instance, out List<IAttackTarget> snapshotAllTargets))
+                if (__instance.allTargets.Contains(target))
                 {
-                    if (snapshotAllTargets.Contains(target))
-                    {
-                        Log.Warning("Tried to register the same target twice " + target.ToStringSafe() + " in " + __instance.GetType());
-                        return false;
-                    }
-                    snapshotAllTargets.Add(target);
+                    Log.Warning("Tried to register the same target twice " + target.ToStringSafe() + " in " + __instance.GetType());
+                    return false;
                 }
-                else
+                Thing thing = target.Thing;
+                if (!thing.Spawned)
                 {
-                    AllTargetsListDict[__instance] = new List<IAttackTarget>() { target };
+                    Log.Warning("Tried to register unspawned thing " + thing.ToStringSafe() + " in " + __instance.GetType());
+                    return false;
                 }
-
-            }
-            List<Faction> allFactionsListForReading = Find.FactionManager.AllFactionsListForReading;
-            Dictionary<Faction, List<IAttackTarget>> targetsHostileToFaction = getTargetsHostileToFactionList(__instance);
-            for (int i = 0; i < allFactionsListForReading.Count; i++)
-            {
-                Faction faction = allFactionsListForReading[i];
-                if (!thing.HostileTo(faction)) continue;
-                lock (targetsHostileToFaction)
+                if (thing.Map != __instance.map)
                 {
-                    if (targetsHostileToFaction.TryGetValue(faction, out List<IAttackTarget> hostileTargets))
+                    Log.Warning("Tried to register attack target " + thing.ToStringSafe() + " but its Map is not this one.");
+                    return false;
+                }
+                __instance.allTargets = new HashSet<IAttackTarget>(__instance.allTargets) { target };
+                Dictionary<Faction, HashSet<IAttackTarget>> byFaction = new Dictionary<Faction, HashSet<IAttackTarget>>(__instance.targetsHostileToFaction);
+                List<Faction> factions = Find.FactionManager.AllFactionsListForReading;
+                for (int i = 0; i < factions.Count; i++)
+                {
+                    Faction f = factions[i];
+                    if (thing.HostileTo(f))
                     {
-                        targetsHostileToFaction[faction] = new List<IAttackTarget>(hostileTargets) { target };
-                    }
-                    else
-                    {
-                        targetsHostileToFaction[faction] = new List<IAttackTarget>() { target };
+                        HashSet<IAttackTarget> set = byFaction.TryGetValue(f, out HashSet<IAttackTarget> old) ? new HashSet<IAttackTarget>(old) : new HashSet<IAttackTarget>();
+                        set.Add(target);
+                        byFaction[f] = set;
                     }
                 }
-            }
-
-            if (!(target is Pawn pawn)) return false;
-            if (pawn.InAggroMentalState)
-            {
-                lock (PawnsInAggroMentalStateDict)
+                __instance.targetsHostileToFaction = byFaction;
+                if (target is Pawn pawn)
                 {
-                    if (PawnsInAggroMentalStateDict.TryGetValue(__instance, out List<Pawn> pawnsInAggroMentalStateList))
-                    {
-                        PawnsInAggroMentalStateDict[__instance] = new List<Pawn>(pawnsInAggroMentalStateList) { pawn };
-                    }
-                    else
-                    {
-                        PawnsInAggroMentalStateDict[__instance] = new List<Pawn>() { pawn };
-                    }
+                    if (pawn.InAggroMentalState)
+                        __instance.pawnsInAggroMentalState = new HashSet<Pawn>(__instance.pawnsInAggroMentalState) { pawn };
+                    if (pawn.Faction == null && pawn.RaceProps.Humanlike)
+                        __instance.factionlessHumanlikes = new HashSet<Pawn>(__instance.factionlessHumanlikes) { pawn };
                 }
             }
-
-            if (pawn.Faction != null || !pawn.RaceProps.Humanlike) return false;
-            lock (FactionlessHumanlikesDict)
-            {
-                if (FactionlessHumanlikesDict.TryGetValue(__instance, out List<Pawn> factionlessHumanlikesList))
-                {
-                    FactionlessHumanlikesDict[__instance] = new List<Pawn>(factionlessHumanlikesList) { pawn };
-                }
-                else
-                {
-                    FactionlessHumanlikesDict[__instance] = new List<Pawn>() { pawn };
-                }
-            }
-
             return false;
-
         }
 
-        public static bool UpdateTarget(AttackTargetsCache __instance, IAttackTarget t)
+        public static bool DeregisterTarget(AttackTargetsCache __instance, IAttackTarget target)
         {
-            if (!getAllTargets(__instance).Contains(t)) return false;
-            DeregisterTarget(__instance, t);
-            Thing thing = t.Thing;
-            if (thing.Spawned && thing.Map == __instance.map)
+            lock (__instance)
             {
-                RegisterTarget(__instance, t);
+                if (!__instance.allTargets.Contains(target))
+                {
+                    Log.Warning("Tried to deregister " + target?.ToString() + " but it's not in " + __instance.GetType());
+                    return false;
+                }
+                HashSet<IAttackTarget> all = new HashSet<IAttackTarget>(__instance.allTargets);
+                all.Remove(target);
+                __instance.allTargets = all;
+                Dictionary<Faction, HashSet<IAttackTarget>> byFaction = null;
+                foreach (KeyValuePair<Faction, HashSet<IAttackTarget>> kv in __instance.targetsHostileToFaction)
+                {
+                    if (kv.Value.Contains(target))
+                    {
+                        if (byFaction == null) byFaction = new Dictionary<Faction, HashSet<IAttackTarget>>(__instance.targetsHostileToFaction);
+                        HashSet<IAttackTarget> set = new HashSet<IAttackTarget>(kv.Value);
+                        set.Remove(target);
+                        byFaction[kv.Key] = set;
+                    }
+                }
+                if (byFaction != null) __instance.targetsHostileToFaction = byFaction;
+                if (target is Pawn pawn)
+                {
+                    if (__instance.pawnsInAggroMentalState.Contains(pawn))
+                    {
+                        HashSet<Pawn> s = new HashSet<Pawn>(__instance.pawnsInAggroMentalState);
+                        s.Remove(pawn);
+                        __instance.pawnsInAggroMentalState = s;
+                    }
+                    if (__instance.factionlessHumanlikes.Contains(pawn))
+                    {
+                        HashSet<Pawn> s = new HashSet<Pawn>(__instance.factionlessHumanlikes);
+                        s.Remove(pawn);
+                        __instance.factionlessHumanlikes = s;
+                    }
+                }
             }
             return false;
         }
 
+        // Vanilla fills a static list shared by all maps and threads; same 1.6 logic into a fresh list.
         public static bool GetPotentialTargetsFor(AttackTargetsCache __instance, ref List<IAttackTarget> __result, IAttackTargetSearcher th)
         {
             Thing thing = th.Thing;
@@ -194,104 +123,92 @@ namespace RimThreaded.RW_Patches
             Faction faction = thing.Faction;
             if (faction != null)
             {
-                List<IAttackTarget> snapshotTargetsHostileToFactionList = getTargetsHostileToFactionList(__instance, faction);
-                foreach (IAttackTarget item in snapshotTargetsHostileToFactionList)
+                foreach (IAttackTarget item in __instance.TargetsHostileToFaction(faction))
                 {
                     if (thing.HostileTo(item.Thing))
-                    {
                         targets.Add(item);
-                    }
                 }
             }
-            if (PawnsInAggroMentalStateDict.TryGetValue(__instance, out List<Pawn> listPawnsInAggroMentalState))
+            foreach (Pawn item2 in __instance.pawnsInAggroMentalState)
             {
-                foreach (Pawn pawn in listPawnsInAggroMentalState)
-                {
-                    if (thing.HostileTo(pawn))
-                    {
-                        targets.Add(pawn);
-                    }
-                }
+                if (thing.HostileTo(item2))
+                    targets.Add(item2);
             }
-
-            if (FactionlessHumanlikesDict.TryGetValue(__instance, out List<Pawn> listFactionlessHumanlikes))
+            foreach (Pawn factionlessHumanlike in __instance.factionlessHumanlikes)
             {
-                foreach (Pawn pawn2 in listFactionlessHumanlikes)
-                {
-                    if (thing.HostileTo(pawn2))
-                    {
-                        targets.Add(pawn2);
-                    }
-                }
+                if (thing.HostileTo(factionlessHumanlike))
+                    targets.Add(factionlessHumanlike);
             }
-
-            if (th is Pawn pawn3 && PrisonBreakUtility.IsPrisonBreaking(pawn3))
+            Pawn pawn = th as Pawn;
+            if (pawn != null && PrisonBreakUtility.IsPrisonBreaking(pawn))
             {
-                Faction hostFaction = pawn3.guest.HostFaction;
+                Faction hostFaction = pawn.guest.HostFaction;
                 List<Pawn> list = __instance.map.mapPawns.SpawnedPawnsInFaction(hostFaction);
                 for (int i = 0; i < list.Count; i++)
                 {
                     if (thing.HostileTo(list[i]))
-                    {
                         targets.Add(list[i]);
-                    }
+                }
+            }
+            if (pawn != null && ModsConfig.IdeologyActive && SlaveRebellionUtility.IsRebelling(pawn))
+            {
+                Faction faction2 = pawn.Faction;
+                List<Pawn> list2 = __instance.map.mapPawns.SpawnedPawnsInFaction(faction2);
+                for (int j = 0; j < list2.Count; j++)
+                {
+                    if (thing.HostileTo(list2[j]))
+                        targets.Add(list2[j]);
                 }
             }
             __result = targets;
             return false;
         }
 
-        public static bool TargetsHostileToFaction(AttackTargetsCache __instance, ref HashSet<IAttackTarget> __result, Faction f)
+        public static bool Notify_FactionHostilityChanged(AttackTargetsCache __instance, Faction f1, Faction f2)
         {
-            if (f == null)
+            List<IAttackTarget> toUpdate = new List<IAttackTarget>();
+            lock (__instance)
             {
-                Log.Warning("Called TargetsHostileToFaction with null faction.");
-                __result = EmptySet;
-                return false;
+                foreach (IAttackTarget allTarget in __instance.allTargets)
+                {
+                    Thing thing = allTarget.Thing;
+                    Pawn pawn = thing as Pawn;
+                    if (thing.Faction == f1 || thing.Faction == f2 || (pawn != null && pawn.HostFaction == f1) || (pawn != null && pawn.HostFaction == f2))
+                        toUpdate.Add(allTarget);
+                }
+                for (int i = 0; i < toUpdate.Count; i++)
+                    __instance.UpdateTarget(toUpdate[i]);
             }
-
-            __result = new HashSet<IAttackTarget>(getTargetsHostileToFactionList(__instance, f));
             return false;
         }
 
-        private static List<IAttackTarget> getTargetsHostileToFactionList(AttackTargetsCache __instance, Faction faction)
+        public static bool Notify_FactionAdded(AttackTargetsCache __instance, Faction faction)
         {
-            if (faction == null)
+            lock (__instance)
             {
-                Log.Warning("Called getTargetsHostileToFactionList with null faction.");
-            }
-            else
-            {
-                if (getTargetsHostileToFactionList(__instance).TryGetValue(faction, out List<IAttackTarget> listIAttackTargets))
+                if (!__instance.targetsHostileToFaction.ContainsKey(faction))
                 {
-                    return listIAttackTargets;
+                    __instance.targetsHostileToFaction = new Dictionary<Faction, HashSet<IAttackTarget>>(__instance.targetsHostileToFaction)
+                    {
+                        [faction] = new HashSet<IAttackTarget>()
+                    };
                 }
             }
-            return EmptyList;
-        }
-        private static Dictionary<Faction, List<IAttackTarget>> getTargetsHostileToFactionList(AttackTargetsCache __instance)
-        {
-            if (TargetsHostileToFactionDict.TryGetValue(__instance,
-                out Dictionary<Faction, List<IAttackTarget>> factionIAttackTargetDict)) return factionIAttackTargetDict;
-            lock (TargetsHostileToFactionDict)
-            {
-                if (!TargetsHostileToFactionDict.TryGetValue(__instance, out Dictionary<Faction, List<IAttackTarget>> factionIAttackTargetDict2))
-                {
-                    factionIAttackTargetDict = new Dictionary<Faction, List<IAttackTarget>>();
-                    TargetsHostileToFactionDict[__instance] = factionIAttackTargetDict;
-                }
-                else
-                {
-                    factionIAttackTargetDict = factionIAttackTargetDict2;
-                }
-            }
-            return factionIAttackTargetDict;
+            return false;
         }
 
-        private static List<IAttackTarget> getAllTargets(AttackTargetsCache __instance)
+        public static bool Notify_FactionRemoved(AttackTargetsCache __instance, Faction faction)
         {
-            return AllTargetsListDict.TryGetValue(__instance, out List<IAttackTarget> allTargetsList) ? allTargetsList : EmptyList;
+            lock (__instance)
+            {
+                if (__instance.targetsHostileToFaction.ContainsKey(faction))
+                {
+                    Dictionary<Faction, HashSet<IAttackTarget>> copy = new Dictionary<Faction, HashSet<IAttackTarget>>(__instance.targetsHostileToFaction);
+                    copy.Remove(faction);
+                    __instance.targetsHostileToFaction = copy;
+                }
+            }
+            return false;
         }
-
     }
 }

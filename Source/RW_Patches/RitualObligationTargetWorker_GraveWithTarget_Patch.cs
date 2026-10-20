@@ -14,21 +14,30 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Prefix(original, patched, nameof(LabelExtraPart), new Type[] { typeof(RitualObligation) });
             RimThreadedHarmony.Prefix(original, patched, nameof(GetTargetInfos));
         }
+        // 1.6 logic made null-safe. The 1.4 copies always cast targetA to Corpse; in 1.6 the target may also be a Pawn (vanilla checks
+        // "Thing is Pawn" first), so the old cast threw InvalidCastException. 1.6 also has the classic-mode text and no "must be buried" suffix.
         internal static IEnumerable<string> GetTargetInfos_E(RitualObligationTargetWorker_GraveWithTarget __instance, RitualObligation obligation)
         {
-            if (obligation is null || obligation.targetA == null || obligation.targetA.Thing is null || obligation.targetA.Thing.ParentHolder is null || ((Corpse)obligation.targetA.Thing).InnerPawn is null)
+            if (obligation == null)
             {
-                yield return "RitualTargetGraveInfoAbstract".Translate(__instance.parent.ideo.Named("IDEO"));
+                if (Find.IdeoManager.classicMode)
+                    yield return "RitualTargetGraveInfoAbstractNoIdeo".Translate();
+                else
+                    yield return "RitualTargetGraveInfoAbstract".Translate(__instance.parent.ideo.Named("IDEO"));
                 yield break;
             }
-            bool num = obligation.targetA.Thing.ParentHolder is Building_Grave;
-            Pawn innerPawn = ((Corpse)obligation.targetA.Thing).InnerPawn;
-            TaggedString taggedString = "RitualTargetGraveInfo".Translate(innerPawn.Named("PAWN"));
-            if (!num)
-            {
-                taggedString += " (" + "RitualTargetGraveInfoMustBeBuried".Translate(innerPawn.Named("PAWN")) + ")";
-            }
-            yield return taggedString;
+            Pawn pawn = TargetPawn(obligation);
+            if (pawn == null)
+                yield break;
+            yield return "RitualTargetGraveInfo".Translate(pawn.Named("PAWN"));
+        }
+
+        static Pawn TargetPawn(RitualObligation obligation)
+        {
+            Thing thing = obligation?.targetA.Thing;
+            if (thing is Pawn pawn)
+                return pawn;
+            return (thing as Corpse)?.InnerPawn;
         }
 
         public static bool GetTargetInfos(RitualObligationTargetWorker_GraveWithTarget __instance, ref IEnumerable<string> __result, RitualObligation obligation)
@@ -36,14 +45,10 @@ namespace RimThreaded.RW_Patches
             __result = GetTargetInfos_E(__instance, obligation);
             return false;
         }
+
         public static bool LabelExtraPart(RitualObligationTargetWorker_GraveWithTarget __instance, ref string __result, RitualObligation obligation)
         {
-            __result = string.Empty;
-            if (obligation == null || obligation.targetA == null || (Corpse)obligation.targetA.Thing == null || ((Corpse)obligation.targetA.Thing).InnerPawn == null)
-            {
-                return false;
-            }
-            __result = ((Corpse)obligation.targetA.Thing).InnerPawn.LabelShort;
+            __result = TargetPawn(obligation)?.LabelShort ?? string.Empty;
             return false;
         }
     }

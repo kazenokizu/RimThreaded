@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Verse;
 
@@ -59,13 +59,13 @@ namespace RimThreaded.RW_Patches
             __result = false;
             if (t == null)
                 return false;
-            Map map = t.Map;
+            Map map = t.MapHeld; // 1.6: MapHeld/PositionHeld (things inside containers)
             if (map == null)
                 return false;
             FogGrid fogGrid = map.fogGrid;
             if (fogGrid == null)
                 return false;
-            __result = fogGrid.IsFogged(t.Position);
+            __result = fogGrid.IsFogged(t.PositionHeld);
             return false;
         }
     }

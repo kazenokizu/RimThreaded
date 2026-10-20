@@ -63,7 +63,12 @@ namespace RimThreaded.RW_Patches
             __result = null;
             int mapIndexOrState = __instance.mapIndexOrState;
             if (mapIndexOrState >= 0)
-                __result = Find.Maps[mapIndexOrState];
+            {
+                // 1.6: Find.Maps?[...] (null outside a game). Index read once; out-of-range (map removed concurrently) yields null.
+                List<Map> maps = Find.Maps;
+                if (maps != null && mapIndexOrState < maps.Count)
+                    __result = maps[mapIndexOrState];
+            }
             //else
             //{
             //    lock (lastMapIndex)

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using Verse;
+using RimWorld.Planet;
 
 namespace RimThreaded.RW_Patches
 {
@@ -15,16 +16,18 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Prefix(original, patched, "get_IsPlayerHome");
         }
 
+        // 1.6 logic (null-safe): gravship-landed maps and maps with a player grav engine also count as player home (Odyssey).
+        // The 1.4 copy returned false for those.
         public static bool get_IsPlayerHome(Map __instance, ref bool __result)
         {
-            if (__instance.info != null && __instance.info.parent != null && __instance.info.parent.def != null && __instance.info.parent.def.canBePlayerHome)
+            MapParent parent = __instance.info?.parent;
+            if (!__instance.wasSpawnedViaGravShipLanding && (parent == null || parent.Faction != Faction.OfPlayer || parent.def == null || !parent.def.canBePlayerHome))
             {
-                __result = __instance.info.parent.Faction == Faction.OfPlayer;
+                __result = GravshipUtility.PlayerHasGravEngine(__instance);
                 return false;
             }
-            __result = false;
+            __result = true;
             return false;
-
         }
 
         public static void MapsPostTickPrepare()

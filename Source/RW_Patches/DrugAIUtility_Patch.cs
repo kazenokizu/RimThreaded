@@ -21,7 +21,7 @@ namespace RimThreaded.RW_Patches
         public static bool IngestAndTakeToInventoryJob(ref Job __result, Thing drug, Pawn pawn, int maxNumToCarry = 9999)
         {
             Job job = JobMaker.MakeJob(JobDefOf.Ingest, drug);
-            job.count = Mathf.Min(drug.stackCount, drug.def.ingestible.maxNumToIngestAtOnce, maxNumToCarry);
+            job.count = Mathf.Min(drug.stackCount, drug.def.ingestible.defaultNumToIngestAtOnce /* 1.6 */, maxNumToCarry);
             if (pawn.drugs != null && drugPolicyExists(pawn.drugs.CurrentPolicy.entriesInt, drug.def))
             {
                 DrugPolicyEntry drugPolicyEntry = pawn.drugs.CurrentPolicy[drug.def];

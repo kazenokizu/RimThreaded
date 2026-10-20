@@ -50,7 +50,11 @@ namespace RimThreaded.RW_Patches
         public static bool CachedResultFor(ReachabilityCache __instance, ref BoolUnknown __result, District A, District B, TraverseParms traverseParams)
         {
             if (A == null || B == null)
+            {
+                // BoolUnknown.True is the enum default (value 0); leaving __result unset reported "reachable" for null districts.
+                __result = BoolUnknown.Unknown;
                 return false;
+            }
             Dictionary<ReachabilityCache.CachedEntry, bool> cacheDict = getCacheDict(__instance);
             lock (cacheDict)
             {

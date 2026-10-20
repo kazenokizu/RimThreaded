@@ -85,6 +85,12 @@ namespace RimThreaded.RW_Patches
             s1.Restart();
             s2.Restart();
 #endif
+            // 1.6: humanlike pawns in labor get no work.
+            if (pawn.RaceProps.Humanlike && pawn.health.hediffSet.InLabor())
+            {
+                __result = ThinkResult.NoJob;
+                return false;
+            }
             if (__instance.emergency && pawn.mindState.priorityWork.IsPrioritized)
             {
                 List<WorkGiverDef> workGiversByPriority = pawn.mindState.priorityWork.WorkGiver.workType.workGiversByPriority;
@@ -97,6 +103,8 @@ namespace RimThreaded.RW_Patches
                         if (job != null)
                         {
                             job.playerForced = true;
+                            if (pawn.jobs.debugLog)
+                                pawn.jobs.DebugLogEvent($"JobGiver_Work produced emergency Job {job.ToStringSafe()} from {worker}");
                             __result = new ThinkResult(job, __instance, workGiversByPriority[i].tagToGive);
                             // Log.Message(s1.ElapsedMilliseconds.ToString() + " s10");
                             return false;
@@ -138,6 +146,8 @@ namespace RimThreaded.RW_Patches
                         Job job2 = workGiver.NonScanJob(pawn);
                         if (job2 != null)
                         {
+                            if (pawn.jobs.debugLog)
+                                pawn.jobs.DebugLogEvent($"JobGiver_Work produced non-scan Job {job2.ToStringSafe()} from {workGiver}");
                             __result = new ThinkResult(job2, __instance, workGiver.def.tagToGive);
 #if DEBUG
                             s1.Stop();
@@ -165,6 +175,9 @@ namespace RimThreaded.RW_Patches
                                     validator = (t) => !t.IsForbidden(pawn) && scanner.HasJobOnThing(pawn, t);
                                 }
                                 IEnumerable<Thing> enumerable = scanner.PotentialWorkThingsGlobal(pawn);
+                                // 1.6: a matching thing the pawn is already carrying is preferred.
+                                Thing carried = pawn.carryTracker?.CarriedThing;
+                                bool preferCarried = carried != null && scanner.PotentialWorkThingRequest.Accepts(carried) && validator(carried);
                                 Thing thing;
                                 if (scanner.Prioritized)
                                 {
@@ -176,6 +189,15 @@ namespace RimThreaded.RW_Patches
                                     thing = !scanner.AllowUnreachable ?
                                         GenClosest.ClosestThing_Global_Reachable(pawn.Position, pawn.Map, enumerable2, scanner.PathEndMode, TraverseParms.For(pawn, scanner.MaxPathDanger(pawn)), 9999f, validator, (x) => scanner.GetPriority(pawn, x)) :
                                         GenClosest.ClosestThing_Global(pawn.Position, enumerable2, 99999f, validator, (x) => scanner.GetPriority(pawn, x));
+                                    if (preferCarried)
+                                    {
+                                        if (thing == null || scanner.GetPriority(pawn, carried) >= scanner.GetPriority(pawn, thing))
+                                            thing = carried;
+                                    }
+                                }
+                                else if (preferCarried)
+                                {
+                                    thing = carried;
                                 }
                                 else if (scanner.AllowUnreachable)
                                 {
@@ -261,27 +283,32 @@ namespace RimThreaded.RW_Patches
 
                             }
                         }
+                        // 1.6 ProcessCell: for prioritized scanners a higher priority wins regardless of distance, distance only breaks ties.
+                        // (The 1.4 copy also required the cell to be closer, so a farther higher-priority cell was never chosen.)
                         void ProcessCell(IntVec3 c)
                         {
+                            bool better = false;
                             float newDistanceSquared = (c - pawnPosition).LengthHorizontalSquared;
                             float newPriority = 0f;
-
                             if (prioritized)
                             {
-                                newPriority = scanner.GetPriority(pawn, c);
-                                if (newPriority < bestPriority)
+                                if (!c.IsForbidden(pawn) && scanner.HasJobOnCell(pawn, c))
                                 {
-                                    return;
+                                    if (!allowUnreachable && !pawn.CanReach(c, scanner.PathEndMode, maxPathDanger))
+                                        return;
+                                    newPriority = scanner.GetPriority(pawn, c);
+                                    if (newPriority > bestPriority || (newPriority == bestPriority && newDistanceSquared < closestDistSquared))
+                                        better = true;
                                 }
                             }
-
-                            if (newDistanceSquared < closestDistSquared && !c.IsForbidden(pawn) && scanner.HasJobOnCell(pawn, c))
+                            else if (newDistanceSquared < closestDistSquared && !c.IsForbidden(pawn) && scanner.HasJobOnCell(pawn, c))
                             {
                                 if (!allowUnreachable && !pawn.CanReach(c, scanner.PathEndMode, maxPathDanger))
-                                {
                                     return;
-                                }
-
+                                better = true;
+                            }
+                            if (better)
+                            {
                                 bestTargetOfLastPriority = new TargetInfo(c, pawn.Map);
                                 scannerWhoProvidedTarget = scanner;
                                 closestDistSquared = newDistanceSquared;
@@ -302,6 +329,8 @@ namespace RimThreaded.RW_Patches
                         if (job3 != null)
                         {
                             job3.workGiverDef = scannerWhoProvidedTarget.def;
+                            if (pawn.jobs.debugLog)
+                                pawn.jobs.DebugLogEvent($"JobGiver_Work produced scan Job {job3.ToStringSafe()} from {scannerWhoProvidedTarget}");
                             __result = new ThinkResult(job3, __instance, workGiver.def.tagToGive);
 
 #if DEBUG

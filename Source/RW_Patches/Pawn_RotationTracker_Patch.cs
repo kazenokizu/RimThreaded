@@ -14,7 +14,18 @@ namespace RimThreaded.RW_Patches
 
         public static bool UpdateRotation(Pawn_RotationTracker __instance)
         {
-            if (__instance.pawn.Destroyed || __instance.pawn.jobs.HandlingFacing)
+            // Synced with 1.6: fixed-rotation pawn kinds and stuns that disable rotation. Otherwise vanilla, with job/driver read once (null-safe).
+            Pawn pawn = __instance.pawn;
+            if (pawn.Destroyed)
+            {
+                return false;
+            }
+            if (pawn.kindDef.useFixedRotation)
+            {
+                pawn.Rotation = pawn.kindDef.fixedRotation;
+                return false;
+            }
+            if (pawn.jobs.HandlingFacing || (pawn.stances.stunner.Stunned && pawn.stances.stunner.DisableRotation))
             {
                 return false;
             }

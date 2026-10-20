@@ -14,7 +14,7 @@ namespace RimThreaded.RW_Patches
         }
         public static bool get_Deliveree(JobDriver_TendPatient __instance, ref Pawn __result)
         {
-            __result = (Pawn)__instance?.job?.targetA.Thing;
+            __result = __instance?.job?.targetA.Thing as Pawn; // vanilla: job.targetA.Pawn (null for non-pawn targets)
             return false;
         }
     }

@@ -68,13 +68,13 @@ namespace RimThreaded.RW_Patches
                 {
                     break;
                 }
-                if (jobi.job == j)
+                if (jobi?.job == j) // 1.6: null-safe
                 {
                     __result = true;
                     return false;
                 }
             }
-
+            __result = false;
             return false;
         }
 

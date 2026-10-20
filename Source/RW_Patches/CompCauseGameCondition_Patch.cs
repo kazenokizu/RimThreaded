@@ -46,6 +46,7 @@ namespace RimThreaded.RW_Patches
             GameCondition gameCondition = GameConditionMaker.MakeCondition(__instance.ConditionDef);
             gameCondition.Duration = gameCondition.TransitionTicks;
             gameCondition.conditionCauser = __instance.parent;
+            gameCondition.hideSource = __instance.Props.hideSource; // 1.6
             map.gameConditionManager.RegisterCondition(gameCondition);
             lock (__instance)
             {

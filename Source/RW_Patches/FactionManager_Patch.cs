@@ -19,6 +19,9 @@ namespace RimThreaded.RW_Patches
 
         public static bool FactionManagerTick(FactionManager __instance)
         {
+            // 1.6 vanilla order: goodwill situations, settlement proximity, faction ticks (here: on workers), removals.
+            // The 1.4 copy never called GoodwillManagerTick, so periodic goodwill-situation recalculation stopped.
+            __instance.goodwillSituationManager.GoodwillManagerTick();
             SettlementProximityGoodwillUtility.CheckSettlementProximityGoodwillChange();
 
             lock (__instance)
@@ -32,7 +35,7 @@ namespace RimThreaded.RW_Patches
                     __instance.Remove(faction);
                 }
             }
-            allFactionsTickList = __instance.allFactions;
+            allFactionsTickList = new List<Faction>(__instance.allFactions); // snapshot: factions can be added while workers tick
             allFactionsTicks = allFactionsTickList.Count;
             return false;
         }

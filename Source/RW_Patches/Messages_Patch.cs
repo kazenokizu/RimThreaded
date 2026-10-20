@@ -31,21 +31,21 @@ namespace RimThreaded.RW_Patches
             }
             return false;
         }
+        // Sounds are played after the lock is released: from a worker thread PlayOneShotOnCamera waits for the main thread, and the main thread
+        // takes this same lock in MessagesDoGUI (holding it while waiting would deadlock).
         public static bool Message(Message msg, bool historical = true)
         {
+            if (!Messages.AcceptsMessage(msg.text, msg.lookTargets))
+                return false;
+            if (historical && Find.Archive != null)
+                Find.Archive.Add(msg);
             lock (Messages.liveMessages)
             {
-                if (!Messages.AcceptsMessage(msg.text, msg.lookTargets))
-                    return false;
-                if (historical && Find.Archive != null)
-                    Find.Archive.Add(msg);
                 Messages.liveMessages.Add(msg);
                 while (Messages.liveMessages.Count > 12)
                     Messages.liveMessages.RemoveAt(0);
-                if (msg.def.sound == null)
-                    return false;
-                msg.def.sound.PlayOneShotOnCamera();
             }
+            msg.def.sound?.PlayOneShotOnCamera();
             return false;
         }
         public static bool MessagesDoGUI()
@@ -82,7 +82,8 @@ namespace RimThreaded.RW_Patches
                 }
             }
             messageAlpha = a;
-            return flag;
+            __result = flag; // the 1.4 version returned flag as the prefix result, so on a hit vanilla ran again without the lock
+            return false;
         }
         public static bool Clear()
         {
@@ -102,6 +103,8 @@ namespace RimThreaded.RW_Patches
             return false;
         }
 
+        // 1.6 logic: an identical live message is refreshed (timer reset, flash, sound) instead of being added again; only a same-frame duplicate is
+        // dropped silently. The 1.4 copy only handled the same-frame case, so repeated messages stacked up. Sound is played outside the lock.
         public static bool AcceptsMessage(ref bool __result, string text, LookTargets lookTargets)
         {
             if (text.NullOrEmpty())
@@ -109,16 +112,31 @@ namespace RimThreaded.RW_Patches
                 __result = false;
                 return false;
             }
+            Message refreshed = null;
             lock (Messages.liveMessages)
             {
-                for (int index = 0; index < Messages.liveMessages.Count; ++index)
+                for (int i = 0; i < Messages.liveMessages.Count; i++)
                 {
-                    if (Messages.liveMessages[index].text == text && Messages.liveMessages[index].startingFrame == RealTime.frameCount && LookTargets.SameTargets(Messages.liveMessages[index].lookTargets, lookTargets))
+                    Message m = Messages.liveMessages[i];
+                    if (m.text == text && LookTargets.SameTargets(m.lookTargets, lookTargets))
                     {
-                        __result = false;
-                        return false;
+                        if (m.startingFrame == RealTime.frameCount)
+                        {
+                            __result = false;
+                            return false;
+                        }
+                        m.ResetTimer();
+                        m.Flash();
+                        refreshed = m;
+                        break;
                     }
                 }
+            }
+            if (refreshed != null)
+            {
+                refreshed.def.sound.PlayOneShotOnCamera();
+                __result = false;
+                return false;
             }
             __result = true;
             return false;

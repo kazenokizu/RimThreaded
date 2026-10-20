@@ -61,53 +61,56 @@ namespace RimThreaded.RW_Patches
             return false;
         }
 
+        // 1.6 logic. The 1.4 copy overwrote newThought.otherPawn with the (often null) argument instead of "otherPawn ?? newThought.otherPawn",
+        // lacked the developmental-stage filter for social thoughts, and dropped the replaceThoughts / Notify_NewThoughtInGroupAdded pass.
+        // Serialized on the handler; the memory list is replaced on add (copy-on-write, like RemoveMemory) so readers never see it change.
         public static bool TryGainMemory(MemoryThoughtHandler __instance, Thought_Memory newThought, Pawn otherPawn = null)
         {
-            lock (__instance) //ADDED
+            Pawn pawn = __instance.pawn;
+            bool showBubble;
+            lock (__instance)
             {
-                if (!ThoughtUtility.CanGetThought(__instance.pawn, newThought.def))
-                {
+                if (!ThoughtUtility.CanGetThought(pawn, newThought.def))
                     return false;
-                }
-
-                if (newThought is Thought_MemorySocial && newThought.otherPawn == null && otherPawn == null)
+                if (newThought is Thought_MemorySocial)
                 {
-                    Log.Error(string.Concat("Can't gain social thought ", newThought.def, " because its otherPawn is null and otherPawn passed to this method is also null. Social thoughts must have otherPawn."));
-                    return false;
+                    if (newThought.otherPawn == null && otherPawn == null)
+                    {
+                        Log.Error("Can't gain social thought " + newThought.def?.ToString() + " because its otherPawn is null and otherPawn passed to this method is also null. Social thoughts must have otherPawn.");
+                        return false;
+                    }
+                    otherPawn = otherPawn ?? newThought.otherPawn;
+                    if (!newThought.def.socialTargetDevelopmentalStageFilter.Has(otherPawn.DevelopmentalStage))
+                        return false;
                 }
-
-                newThought.pawn = __instance.pawn;
+                newThought.pawn = pawn;
                 newThought.otherPawn = otherPawn;
-                if (!newThought.TryMergeWithExistingMemory(out bool showBubble))
-                {
-                    __instance.memories.Add(newThought);
-                }
-
+                if (!newThought.TryMergeWithExistingMemory(out showBubble))
+                    __instance.memories = new List<Thought_Memory>(__instance.memories) { newThought };
                 if (newThought.def.stackLimitForSameOtherPawn >= 0)
                 {
                     while (__instance.NumMemoriesInGroup(newThought) > newThought.def.stackLimitForSameOtherPawn)
-                    {
                         __instance.RemoveMemory(__instance.OldestMemoryInGroup(newThought));
-                    }
                 }
                 if (newThought.def.stackLimit >= 0)
                 {
                     while (__instance.NumMemoriesOfDef(newThought.def) > newThought.def.stackLimit)
-                    {
                         __instance.RemoveMemory(__instance.OldestMemoryOfDef(newThought.def));
-                    }
                 }
-
                 if (newThought.def.thoughtToMake != null)
-                {
                     __instance.TryGainMemory(newThought.def.thoughtToMake, newThought.otherPawn);
-                }
-
-                if (showBubble && newThought.def.showBubble && __instance.pawn.Spawned && PawnUtility.ShouldSendNotificationAbout(__instance.pawn))
+                // RemoveMemory replaces __instance.memories, so iterating the current list is safe (vanilla copies only when replacing).
+                List<Thought_Memory> list = __instance.memories;
+                for (int i = 0; i < list.Count; i++)
                 {
-                    MoteMaker.MakeMoodThoughtBubble(__instance.pawn, newThought);
+                    if (list[i] != newThought && list[i].GroupsWith(newThought))
+                        list[i].Notify_NewThoughtInGroupAdded(newThought);
+                    if (newThought.def.replaceThoughts != null && newThought.def.replaceThoughts.Contains(list[i].def))
+                        __instance.RemoveMemory(list[i]);
                 }
             }
+            if (showBubble && newThought.def.showBubble && pawn.Spawned && PawnUtility.ShouldSendNotificationAbout(pawn))
+                MoteMaker.MakeMoodThoughtBubble(pawn, newThought);
             return false;
         }
 

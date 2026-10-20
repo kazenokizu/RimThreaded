@@ -147,6 +147,27 @@ public static class Program
             }
         }
         Console.WriteLine();
+        if (args.Length > 2 && args[1] == "ildiff")
+        {
+            List<string> Dump(List<CodeInstruction> list)
+            {
+                var names = new Dictionary<Label, string>();
+                int n = 0;
+                foreach (var ci in list) if (ci.labels.Count > 0) { string nm = "L" + (n++); foreach (var l in ci.labels) names[l] = nm; }
+                string Op(object o) => o is Label l ? (names.TryGetValue(l, out var s) ? s : "L?") : o is Label[] ls ? "[" + string.Join(",", ls.Select(x => names.TryGetValue(x, out var s2) ? s2 : "L?")) + "]" : o is MemberInfo mi ? mi.DeclaringType?.Name + "::" + mi : o?.ToString();
+                return list.Select(ci => (ci.labels.Count > 0 ? names[ci.labels[0]] + ": " : "    ") + ci.opcode + " " + Op(ci.operand)).ToList();
+            }
+            foreach (string spec in args.Skip(2))
+            {
+                string[] parts = spec.Split("::");
+                Type ty = game.GetType(parts[0]) ?? AccessTools.TypeByName(parts[0]);
+                MethodBase mb = parts.Length > 2 ? AccessTools.GetDeclaredMethods(ty).Where(m => m.Name == parts[1]).ElementAt(int.Parse(parts[2])) : AccessTools.Method(ty, parts[1]);
+                File.WriteAllLines("/tmp/ildiff_before.txt", Dump(PatchProcessor.GetOriginalInstructions(mb).ToList()));
+                File.WriteAllLines("/tmp/ildiff_after.txt", Dump(PatchProcessor.GetCurrentInstructions(mb, 1000).ToList()));
+                Console.WriteLine("=== ildiff written for " + spec);
+            }
+            return 0;
+        }
         JsonFieldCheck(game, mod, Path.Combine(asmDir, "replacements_1.6.json"));
         // Harmony 2.3.3 on CoreCLR rejects even a do-nothing transpiler on many compiler-generated iterators (identity-scan: 84 of 151
         // untouched game iterators fail), so an InvalidProgramException on a ">d__" MoveNext says nothing about the mod's own transpiler.
@@ -164,6 +185,7 @@ public static class Program
         if (Environment.GetEnvironmentVariable("DRIFT") == "1") DriftCheck(patched);
         DroppedParamCheck(patched);
         LockCoverageCheck(game);
+        UnsetResultCheck(patched);
         Console.WriteLine("=== patched iterator/closure methods: " + string.Join(", ", patched.Where(m => m.DeclaringType.Name.Contains(">d__")).Select(m => m.DeclaringType.DeclaringType?.Name + "." + m.DeclaringType.Name)));
         return real.Count == 0 ? 0 : 1;
     }
@@ -382,6 +404,69 @@ public static class Program
             }
         }
         catch (Exception e) { while (e.InnerException != null) e = e.InnerException; Console.WriteLine("=== lock coverage check failed: " + e.GetType().Name + ": " + e.Message); }
+    }
+
+
+    // Prefixes that skip the original must set __result on every path that returns false; otherwise the caller gets default(T)
+    // (e.g. BoolUnknown.True). Walks the prefix's IL control flow; any use of the __result argument counts as setting it.
+    static void UnsetResultCheck(List<MethodBase> patched)
+    {
+        var rows = new List<string>();
+        var seenPatches = new HashSet<MethodInfo>();
+        foreach (MethodBase original in patched)
+        {
+            Patches info = Harmony.GetPatchInfo(original);
+            if (info == null) continue;
+            foreach (var pre in info.Prefixes.Where(x => x.PatchMethod.DeclaringType.Assembly.GetName().Name == "RimThreaded"))
+            {
+                MethodInfo pm = pre.PatchMethod;
+                if (!seenPatches.Add(pm) || pm.ReturnType != typeof(bool)) continue;
+                ParameterInfo resultParam = pm.GetParameters().FirstOrDefault(x => x.Name == "__result" && x.ParameterType.IsByRef);
+                if (resultParam == null) continue;
+                int argIndex = resultParam.Position + (pm.IsStatic ? 0 : 1);
+                var ins = PatchProcessor.GetOriginalInstructions(pm).ToList();
+                var labelAt = new Dictionary<Label, int>();
+                for (int i = 0; i < ins.Count; i++) foreach (Label l in ins[i].labels) labelAt[l] = i;
+                bool Touches(CodeInstruction ci)
+                {
+                    if (ci.opcode == OpCodes.Ldarg || ci.opcode == OpCodes.Ldarg_S || ci.opcode == OpCodes.Ldarga || ci.opcode == OpCodes.Ldarga_S || ci.opcode == OpCodes.Starg || ci.opcode == OpCodes.Starg_S)
+                    {
+                        int idx = ci.operand is ParameterInfo p2 ? p2.Position + (pm.IsStatic ? 0 : 1) : Convert.ToInt32(ci.operand);
+                        return idx == argIndex;
+                    }
+                    return (argIndex == 0 && ci.opcode == OpCodes.Ldarg_0) || (argIndex == 1 && ci.opcode == OpCodes.Ldarg_1) || (argIndex == 2 && ci.opcode == OpCodes.Ldarg_2) || (argIndex == 3 && ci.opcode == OpCodes.Ldarg_3);
+                }
+                var visited = new HashSet<(int, bool)>();
+                var stack = new Stack<(int, bool)>();
+                stack.Push((0, false));
+                bool bad = false;
+                while (stack.Count > 0 && !bad)
+                {
+                    var (i, touched) = stack.Pop();
+                    while (i < ins.Count)
+                    {
+                        if (!visited.Add((i, touched))) break;
+                        CodeInstruction ci = ins[i];
+                        if (Touches(ci)) touched = true;
+                        if (ci.opcode == OpCodes.Ret)
+                        {
+                            if (!touched && i > 0 && ins[i - 1].opcode == OpCodes.Ldc_I4_0) bad = true;
+                            break;
+                        }
+                        if (ci.opcode == OpCodes.Throw || ci.opcode == OpCodes.Rethrow) break;
+                        var targets = new List<Label>();
+                        if (ci.operand is Label lab) targets.Add(lab);
+                        else if (ci.operand is Label[] labs) targets.AddRange(labs);
+                        foreach (Label t in targets) if (labelAt.TryGetValue(t, out int ti)) stack.Push((ti, touched));
+                        if (ci.opcode == OpCodes.Br || ci.opcode == OpCodes.Br_S || ci.opcode == OpCodes.Leave || ci.opcode == OpCodes.Leave_S) break;
+                        i++;
+                    }
+                }
+                if (bad) rows.Add(Name(original) + " <- " + pm.DeclaringType.Name + "." + pm.Name);
+            }
+        }
+        Console.WriteLine("=== prefixes that can return false without setting __result: " + rows.Count);
+        foreach (string r in rows.OrderBy(x => x)) Console.WriteLine("  " + r);
     }
 
     static string Name(MethodBase m) => m.DeclaringType?.Name + "." + m.Name;

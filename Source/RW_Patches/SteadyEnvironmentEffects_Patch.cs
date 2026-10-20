@@ -46,6 +46,7 @@ namespace RimThreaded.RW_Patches
             __instance.outdoorMeltAmount = __instance.MeltAmountAt(map2.mapTemperature.OutdoorTemp);
             __instance.snowRate = map2.weatherManager.SnowRate;
             __instance.rainRate = map2.weatherManager.RainRate;
+            __instance.sandRate = map2.weatherManager.SandRate; // 1.6: sand weather (vanilla sets this every tick)
             //__instance.deteriorationRate = Mathf.Lerp(1f, 5f, __instance.rainRate);
             int num = Mathf.CeilToInt((float)map2.Area * 0.0006f);
             int area = map2.Area;

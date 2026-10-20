@@ -12,21 +12,16 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Prefix(original, patched, nameof(Applies), new Type[] { typeof(Faction), typeof(Faction) });
         }
 
+        // Guard only: a worker without a def answers false; otherwise vanilla 1.6 runs. (The 1.4 version returned its computed answer as the
+        // prefix result instead of __result, which only gave the right value by coincidence.)
         public static bool Applies(GoodwillSituationWorker_MemeCompatibility __instance, ref bool __result, Faction a, Faction b)
         {
-            Ideo primaryIdeo1 = a.ideos.PrimaryIdeo;
-            if (primaryIdeo1 == null)
-                return false;
-            GoodwillSituationDef def = __instance.def;
-            if (def == null)
+            if (__instance.def == null || a?.ideos == null || b?.ideos == null)
             {
                 __result = false;
                 return false;
             }
-            if (def.versusAll)
-                return primaryIdeo1.memes.Contains(def.meme);
-            Ideo primaryIdeo2 = b.ideos.PrimaryIdeo;
-            return primaryIdeo2 != null && primaryIdeo1.memes.Contains(def.meme) && primaryIdeo2.memes.Contains(def.otherMeme);
+            return true;
         }
     }
 }

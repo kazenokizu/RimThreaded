@@ -1,145 +1,81 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using RimWorld;
 using Verse;
 
 namespace RimThreaded.RW_Patches
 {
-
+    // 1.6 port. The static cache is read from any thread; the 1.4 patch locked only some writes, read without a lock, and did not cover 1.6's
+    // Notify_PawnDiedOrDestroyed (called from vanilla Pawn.Destroy), which removes keys. Now every change publishes new dictionaries
+    // (copy-on-write) under one lock, so lock-free readers always see a complete dictionary. The value is computed outside the lock with the
+    // vanilla PawnCanUseInt. The old patch is in removed_1.6/.
     public class MeditationFocusTypeAvailabilityCache_Patch
     {
+        static readonly object writeLock = new object();
 
         internal static void RunDestructivePatches()
         {
             Type original = typeof(MeditationFocusTypeAvailabilityCache);
             Type patched = typeof(MeditationFocusTypeAvailabilityCache_Patch);
-            RimThreadedHarmony.Prefix(original, patched, "PawnCanUse");
-            RimThreadedHarmony.Prefix(original, patched, "ClearFor");
+            RimThreadedHarmony.Prefix(original, patched, nameof(PawnCanUse));
+            RimThreadedHarmony.Prefix(original, patched, nameof(ClearFor));
+            RimThreadedHarmony.Prefix(original, patched, nameof(Notify_PawnDiedOrDestroyed));
         }
+
         public static bool PawnCanUse(ref bool __result, Pawn p, MeditationFocusDef type)
         {
-            if (!MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached.ContainsKey(p))
+            Dictionary<Pawn, Dictionary<MeditationFocusDef, bool>> outer = MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached;
+            if (outer.TryGetValue(p, out Dictionary<MeditationFocusDef, bool> inner) && inner.TryGetValue(type, out bool cached))
             {
-                lock (MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached)
-                {
-                    MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached[p] = new Dictionary<MeditationFocusDef, bool>();
-                }
+                __result = cached;
+                return false;
             }
-
-            if (!MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached[p].ContainsKey(type))
+            bool value = MeditationFocusTypeAvailabilityCache.PawnCanUseInt(p, type);
+            lock (writeLock)
             {
-                lock (MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached[p])
+                outer = MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached;
+                Dictionary<MeditationFocusDef, bool> newInner = outer.TryGetValue(p, out inner)
+                    ? new Dictionary<MeditationFocusDef, bool>(inner)
+                    : new Dictionary<MeditationFocusDef, bool>();
+                newInner[type] = value;
+                MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached = new Dictionary<Pawn, Dictionary<MeditationFocusDef, bool>>(outer)
                 {
-                    MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached[p][type] = PawnCanUseInt(p, type);
-                }
+                    [p] = newInner
+                };
             }
-
-            __result = MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached[p][type];
+            __result = value;
             return false;
         }
 
         public static bool ClearFor(Pawn p)
         {
-            if (MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached.ContainsKey(p))
+            lock (writeLock)
             {
-                lock (MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached[p])
+                Dictionary<Pawn, Dictionary<MeditationFocusDef, bool>> outer = MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached;
+                if (outer.ContainsKey(p))
                 {
-                    MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached[p] = new Dictionary<MeditationFocusDef, bool>();
+                    MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached = new Dictionary<Pawn, Dictionary<MeditationFocusDef, bool>>(outer)
+                    {
+                        [p] = new Dictionary<MeditationFocusDef, bool>()
+                    };
                 }
             }
             return false;
         }
 
-        private static bool PawnCanUseInt(Pawn p, MeditationFocusDef type)
+        public static bool Notify_PawnDiedOrDestroyed(Pawn p)
         {
-            if (p.story != null)
+            lock (writeLock)
             {
-                for (int i = 0; i < p.story.traits.allTraits.Count; i++)
+                Dictionary<Pawn, Dictionary<MeditationFocusDef, bool>> outer = MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached;
+                if (outer.ContainsKey(p))
                 {
-                    List<MeditationFocusDef> disallowedMeditationFocusTypes = p.story.traits.allTraits[i].CurrentData.disallowedMeditationFocusTypes;
-                    if (disallowedMeditationFocusTypes != null && disallowedMeditationFocusTypes.Contains(type))
-                    {
-                        return false;
-                    }
-                }
-
-                List<string> list = p.story.adulthood?.spawnCategories;
-                List<string> list2 = p.story.childhood?.spawnCategories;
-                for (int j = 0; j < type.incompatibleBackstoriesAny.Count; j++)
-                {
-                    BackstoryCategoryAndSlot backstoryCategoryAndSlot = type.incompatibleBackstoriesAny[j];
-                    List<string> list3 = backstoryCategoryAndSlot.slot == BackstorySlot.Adulthood ? list : list2;
-                    if (list3 != null && list3.Contains(backstoryCategoryAndSlot.categoryName))
-                    {
-                        return false;
-                    }
+                    Dictionary<Pawn, Dictionary<MeditationFocusDef, bool>> copy = new Dictionary<Pawn, Dictionary<MeditationFocusDef, bool>>(outer);
+                    copy.Remove(p);
+                    MeditationFocusTypeAvailabilityCache.pawnCanUseMeditationTypeCached = copy;
                 }
             }
-
-            if (type.requiresRoyalTitle)
-            {
-                if (p.royalty != null)
-                {
-                    return p.royalty.AllTitlesInEffectForReading.Any((t) => t.def.allowDignifiedMeditationFocus);
-                }
-
-                return false;
-            }
-
-            if (p.story != null)
-            {
-                for (int k = 0; k < p.story.traits.allTraits.Count; k++)
-                {
-                    List<MeditationFocusDef> allowedMeditationFocusTypes = p.story.traits.allTraits[k].CurrentData.allowedMeditationFocusTypes;
-                    if (allowedMeditationFocusTypes != null && allowedMeditationFocusTypes.Contains(type))
-                    {
-                        return true;
-                    }
-                }
-
-                List<string> list4 = p.story.adulthood?.spawnCategories;
-                List<string> list5 = p.story.childhood?.spawnCategories;
-                for (int l = 0; l < type.requiredBackstoriesAny.Count; l++)
-                {
-                    BackstoryCategoryAndSlot backstoryCategoryAndSlot2 = type.requiredBackstoriesAny[l];
-                    List<string> list6 = backstoryCategoryAndSlot2.slot == BackstorySlot.Adulthood ? list4 : list5;
-                    if (list6 != null && list6.Contains(backstoryCategoryAndSlot2.categoryName))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            if (type.requiredBackstoriesAny.Count == 0)
-            {
-                bool flag = false;
-                for (int m = 0; m < DefDatabase<TraitDef>.AllDefsListForReading.Count; m++)
-                {
-                    if (flag)
-                    {
-                        break;
-                    }
-
-                    TraitDef traitDef = DefDatabase<TraitDef>.AllDefsListForReading[m];
-                    for (int n = 0; n < traitDef.degreeDatas.Count; n++)
-                    {
-                        List<MeditationFocusDef> allowedMeditationFocusTypes2 = traitDef.degreeDatas[n].allowedMeditationFocusTypes;
-                        if (allowedMeditationFocusTypes2 != null && allowedMeditationFocusTypes2.Contains(type))
-                        {
-                            flag = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!flag)
-                {
-                    return true;
-                }
-            }
-
             return false;
         }
-
     }
 }
