@@ -73,6 +73,14 @@ namespace RimThreaded.RW_Patches
                     __result = Find.Maps.Count == 0 ? RimThreaded.timeSpeedSuperfast : RimThreaded.timeSpeedSuperfast;
                     return false;
                 case TimeSpeed.Ultrafast:
+#if RW17
+                    // 1.7: the dev-mode ultra speed boost returns 20000 (1.6 returned 150, the same as this mod's default)
+                    if (TickManager.UltraSpeedBoost)
+                    {
+                        __result = 20000f;
+                        return false;
+                    }
+#endif
                     __result = Find.Maps.Count == 0 ? RimThreaded.timeSpeedUltrafast : RimThreaded.timeSpeedUltrafast;
                     return false;
                 default:

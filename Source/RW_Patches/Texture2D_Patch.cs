@@ -16,7 +16,11 @@ namespace RimThreaded.RW_Patches
         {
             Type original = typeof(Texture2D);
             Type patched = typeof(Texture2D_Patch);
+#if !RW17
             RimThreadedHarmony.Prefix(original, patched, "Internal_Create");
+#endif
+            // 1.7 (Waylith): Texture2D.Internal_Create no longer exists; textures are built through Waylith.Rendering.GpuTextureService,
+            // which serializes every allocation on its own lock, so creation from a worker thread needs no main-thread dispatch.
             RimThreadedHarmony.Prefix(original, patched, "ReadPixels", new Type[] { typeof(Rect), typeof(int), typeof(int), typeof(bool) });
             RimThreadedHarmony.Prefix(original, patched, "Apply", new Type[] { typeof(bool), typeof(bool) });
         }

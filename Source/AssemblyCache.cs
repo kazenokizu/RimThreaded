@@ -1,4 +1,6 @@
-﻿using Newtonsoft.Json;
+#if !RW17
+using Newtonsoft.Json;
+#endif
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -21,6 +23,14 @@ namespace RimThreaded
         }
     }
 #pragma warning restore 649
+#if RW17
+    public class SerializableMethodDto
+    {
+        public string Name;
+        public string ClassType;
+        public List<string> ParametersType = new List<string>();
+    }
+#endif
     public class AssemblyCache
     {
         private static readonly List<MethodBase> CacheList = new List<MethodBase>();
@@ -28,7 +38,15 @@ namespace RimThreaded
         private static string CurrentMethodPath;
         public static void SaveJson()
         {
+#if RW17
+            // System.Text.Json cannot write System.Type; types are stored by assembly-qualified name.
+            var dto = new List<SerializableMethodDto>();
+            foreach (SerializableMethod sm in CacheListS)
+                dto.Add(new SerializableMethodDto { Name = sm.Name, ClassType = sm.ClassType?.AssemblyQualifiedName, ParametersType = sm.ParametersType.ConvertAll(t => t.AssemblyQualifiedName) });
+            string jsonString = System.Text.Json.JsonSerializer.Serialize(dto, new System.Text.Json.JsonSerializerOptions { IncludeFields = true, WriteIndented = true });
+#else
             string jsonString = JsonConvert.SerializeObject(CacheListS, Formatting.Indented);
+#endif
             File.WriteAllText(CurrentMethodPath, jsonString);
             CacheList.Clear();
             CacheListS.Clear();
@@ -53,7 +71,29 @@ namespace RimThreaded
                 Log.Message("RimThreaded is loading Cached Field Replacements from: " + CurrentMethodPath);
             }
             string jsonstr = File.ReadAllText(CurrentMethodPath);
+#if RW17
+            CacheListS = new List<SerializableMethod>();
+            try
+            {
+                foreach (SerializableMethodDto d in System.Text.Json.JsonSerializer.Deserialize<List<SerializableMethodDto>>(jsonstr, new System.Text.Json.JsonSerializerOptions { IncludeFields = true }))
+                {
+                    var sm = new SerializableMethod { Name = d.Name, ClassType = Type.GetType(d.ClassType) };
+                    foreach (string p in d.ParametersType) sm.ParametersType.Add(Type.GetType(p));
+                    if (sm.ClassType == null || sm.ParametersType.Contains(null))
+                        throw new InvalidDataException("unresolvable type in cache");
+                    CacheListS.Add(sm);
+                }
+            }
+            catch (Exception)
+            {
+                // unreadable or stale cache: rescan instead
+                CacheListS = new List<SerializableMethod>();
+                ReturnMethodList = null;
+                return false;
+            }
+#else
             CacheListS = JsonConvert.DeserializeObject<List<SerializableMethod>>(jsonstr);
+#endif
             foreach (SerializableMethod s in CacheListS)
             {
                 if (s.Name == ".ctor")

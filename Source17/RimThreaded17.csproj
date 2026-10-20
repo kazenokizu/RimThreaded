@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- RimWorld 1.7 (Waylith engine, .NET 10 runtime). Same sources as ../Source, compiled with RW17 defined. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RimThreaded</AssemblyName>
+    <RootNamespace>RimThreaded</RootNamespace>
+    <Version>2.7.2</Version>
+    <AssemblyVersion>2.7.2.0</AssemblyVersion>
+    <FileVersion>2.7.2.0</FileVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>$(DefineConstants);RW17</DefineConstants>
+    <OutputPath>..\RimThreaded\1.7\Assemblies\</OutputPath>
+    <DebugType>portable</DebugType>
+    <NoWarn>$(NoWarn);CS0618;CS0612;CS0414;CS0169;CS0649;CS0162;CS0168;CS0219;CA2200;SYSLIB0011;SYSLIB0050</NoWarn>
+    <PubliciseOutputPath>..\Dependencies\1.7\</PubliciseOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Source\**\*.cs" Exclude="..\Source\obj\**;..\Source\bin\**" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Krafs.Publicizer" Version="2.2.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Lib.Harmony" Version="3.0.0-rc.3" ExcludeAssets="runtime" />
+    <PackageReference Include="majorhoff.ThreadSafeLinkedListRW" Version="1.5.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Publicize Include="Assembly-CSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp"><HintPath>..\Dependencies\1.7\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityStubs"><HintPath>..\Dependencies\1.7\UnityStubs.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Waylith"><HintPath>..\Dependencies\1.7\Waylith.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Waylith.UnityCompat"><HintPath>..\Dependencies\1.7\Waylith.UnityCompat.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

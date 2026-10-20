@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using UnityEngine;
 using System.Reflection;
 using UnityEngine.Experimental.Rendering;
@@ -13,7 +13,7 @@ namespace RimThreaded.RW_Patches
     {
         public static MethodInfo methodgetTemporaryImpl = Method(typeof(RenderTexture), "GetTemporaryImpl", new Type[] { typeof(int), typeof(int), typeof(GraphicsFormat), typeof(GraphicsFormat), typeof(int), typeof(RenderTextureMemoryless), typeof(VRTextureUsage), typeof(bool) });
 
-        static Func<int, int, GraphicsFormat, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture> getTemporaryImpl =
+        static Func<int, int, GraphicsFormat, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture> getTemporaryImpl = methodgetTemporaryImpl == null ? null :
             (Func<int, int, GraphicsFormat, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture>)Delegate.CreateDelegate
             (typeof(Func<int, int, GraphicsFormat, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture>), methodgetTemporaryImpl);
 
@@ -32,8 +32,12 @@ namespace RimThreaded.RW_Patches
         {
             Type original = typeof(RenderTexture);
             Type patched = typeof(RenderTexture_Patch);
+#if !RW17
             RimThreadedHarmony.Prefix(original, patched, nameof(GetTemporaryImpl));
             RimThreadedHarmony.Prefix(original, patched, nameof(GetCompatibleFormat));
+#endif
+            // 1.7 (Waylith): GetTemporaryImpl/GetCompatibleFormat are gone. GetTemporary is "new RenderTexture(...)" with no shared pool, so
+            // it needs no dispatch; the shared parts (active, and ReleaseTemporary's unsynchronized list) are still routed to the main thread.
 
             RimThreadedHarmony.Prefix(original, patched, nameof(set_active));
             RimThreadedHarmony.Prefix(original, patched, nameof(get_active));
@@ -52,7 +56,7 @@ namespace RimThreaded.RW_Patches
 
         private static readonly MethodInfo methodGetCompatibleFormat =
             Method(typeof(RenderTexture), "GetCompatibleFormat");
-        private static readonly Func<RenderTextureFormat, RenderTextureReadWrite, GraphicsFormat> funcGetCompatibleFormat =
+        private static readonly Func<RenderTextureFormat, RenderTextureReadWrite, GraphicsFormat> funcGetCompatibleFormat = methodGetCompatibleFormat == null ? null :
             (Func<RenderTextureFormat, RenderTextureReadWrite, GraphicsFormat>)Delegate.CreateDelegate(
                 typeof(Func<RenderTextureFormat, RenderTextureReadWrite, GraphicsFormat>), methodGetCompatibleFormat);
         private static readonly Func<object[], object> funcGetCompatibleFormat2 = parameters =>

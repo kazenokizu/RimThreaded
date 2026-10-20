@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -50,7 +50,7 @@ namespace RimThreaded.RW_Patches
 
         private static readonly MethodInfo methodGetTextureScaleAndOffsetImpl =
             Method(typeof(Material), "GetTextureScaleAndOffsetImpl", new Type[] { typeof(int) });
-        private static readonly Func<Material, int, Vector4> funcGetTextureScaleAndOffsetImpl =
+        private static readonly Func<Material, int, Vector4> funcGetTextureScaleAndOffsetImpl = methodGetTextureScaleAndOffsetImpl == null ? null :
             (Func<Material, int, Vector4>)Delegate.CreateDelegate(
                 typeof(Func<Material, int, Vector4>), methodGetTextureScaleAndOffsetImpl);
 
@@ -66,11 +66,11 @@ namespace RimThreaded.RW_Patches
         private static readonly Func<object[], object> funcHasProperty2 = parameters => funcHasProperty((Material)parameters[0], (string)parameters[1]);
 
 
-        private static readonly Action<Material, int, Vector2> ActionSetTextureOffsetImpl =
-            (Action<Material, int, Vector2>)Delegate.CreateDelegate(
-                typeof(Action<Material, int, Vector2>),
-                Method(typeof(Material), "SetTextureOffsetImpl", new[]
-                    { typeof(int), typeof(Vector2) }));
+        private static readonly MethodInfo methodSetTextureOffsetImpl =
+            Method(typeof(Material), "SetTextureOffsetImpl", new[] { typeof(int), typeof(Vector2) });
+        // DEBUG-only patch class; Unity internals absent in 1.7 resolve to null instead of failing the static initializer
+        private static readonly Action<Material, int, Vector2> ActionSetTextureOffsetImpl = methodSetTextureOffsetImpl == null ? null :
+            (Action<Material, int, Vector2>)Delegate.CreateDelegate(typeof(Action<Material, int, Vector2>), methodSetTextureOffsetImpl);
 
         private static readonly Action<object[]> ActionSetTextureOffsetImpl2 = parameters =>
             ActionSetTextureOffsetImpl((Material)parameters[0], (int)parameters[1], (Vector2)parameters[2]);

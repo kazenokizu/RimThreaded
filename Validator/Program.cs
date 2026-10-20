@@ -47,11 +47,12 @@ public static class Program
         Type prefsData = game.GetType("Verse.PrefsData");
         AccessTools.Field(prefs, "data").SetValue(null, Activator.CreateInstance(prefsData));
         Type modType = mod.GetType("RimThreaded.RimThreadedMod");
-        string asmDir = Path.Combine(runDir, "1.6", "Assemblies");
+        string rwVersion = Environment.GetEnvironmentVariable("RW_VERSION") ?? "1.6";
+        string asmDir = Path.Combine(runDir, rwVersion, "Assemblies");
         Directory.CreateDirectory(asmDir);
-        File.Copy(Path.Combine(runDir, "replacements_1.6.json"), Path.Combine(asmDir, "replacements_1.6.json"), true);
+        File.Copy(Path.Combine(runDir, "replacements_" + rwVersion + ".json"), Path.Combine(asmDir, "replacements_" + rwVersion + ".json"), true);
         AccessTools.Field(modType, "replacementsFolder").SetValue(null, asmDir);
-        AccessTools.Field(modType, "replacementsJsonPath").SetValue(null, Path.Combine(asmDir, "replacements_1.6.json"));
+        AccessTools.Field(modType, "replacementsJsonPath").SetValue(null, Path.Combine(asmDir, "replacements_" + rwVersion + ".json"));
 
         Console.WriteLine("phase: finalizers");
         // 3. finalizers: turn every exception inside registration code into a recorded failure and continue
@@ -256,7 +257,7 @@ public static class Program
             }
             return 0;
         }
-        JsonFieldCheck(game, mod, Path.Combine(asmDir, "replacements_1.6.json"));
+        JsonFieldCheck(game, mod, Path.Combine(asmDir, "replacements_" + rwVersion + ".json"));
         // Harmony 2.3.3 on CoreCLR rejects even a do-nothing transpiler on many compiler-generated iterators (identity-scan: 84 of 151
         // untouched game iterators fail), so an InvalidProgramException on a ">d__" MoveNext says nothing about the mod's own transpiler.
         bool Unverifiable(string x) => x.Contains("ECall methods must be packaged") || (x.Contains(">d__") && x.Contains("InvalidProgramException"))
@@ -269,6 +270,9 @@ public static class Program
         Console.WriteLine("=== not JIT-verifiable on this runtime (Unity internal call in body, or compiler-generated iterator; the transpiler itself ran): " + ecall.Count);
         foreach (string s in ecall.Take(400)) Console.WriteLine("  " + s.Replace("\n", " ").Substring(0, Math.Min(200, s.Replace("\n", " ").Length)));
         var patched = Harmony.GetAllPatchedMethods().ToList();
+        File.WriteAllLines("/tmp/patched_methods_detail.txt", patched.Select(m => { var pi = Harmony.GetPatchInfo(m); string P(IEnumerable<Patch> ps, string k) => string.Join(" ", ps.Where(x => x.owner == "majorhoff.rimthreaded").Select(x => k + ":" + x.PatchMethod.DeclaringType?.Name + "." + x.PatchMethod.Name)); return m.DeclaringType?.FullName + "::" + m.Name + "(" + string.Join(",", m.GetParameters().Select(x => x.ParameterType.Name)) + ")\t" + P(pi.Prefixes, "pre") + " " + P(pi.Postfixes, "post") + " " + P(pi.Transpilers, "tr") + " " + P(pi.Finalizers, "fin"); }));
+        File.WriteAllLines("/tmp/patched_methods.txt", patched.Select(m => m.DeclaringType?.FullName + "::" + m.Name + "(" + string.Join(",", m.GetParameters().Select(x => x.ParameterType.Name)) + ")")
+            .Concat(Recorded.Select(r => r.original.DeclaringType?.FullName + "::" + r.original.Name + "(" + string.Join(",", r.original.GetParameters().Select(x => x.ParameterType.Name)) + ")")).Distinct().OrderBy(x => x));
         Console.WriteLine("=== methods patched in process: " + patched.Count);
         SignatureCheck(patched);
         NoOpTranspilerCheck(patched);

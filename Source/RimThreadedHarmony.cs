@@ -13,7 +13,9 @@ using Verse.Sound;
 using static HarmonyLib.AccessTools;
 using Verse.AI;
 using System.IO;
+#if !RW17
 using Newtonsoft.Json;
+#endif
 using RimThreaded.RW_Patches;
 
 namespace RimThreaded
@@ -195,7 +197,13 @@ namespace RimThreaded
 			//string replacementsJsonPath = Path.Combine(((Mod)RimThreadedMod).intContent.RootDir, "replacements.json"); 
 
 			string jsonString = File.ReadAllText(RimThreadedMod.replacementsJsonPath);
+#if RW17
+			// 1.7 redirects Unity.Newtonsoft.Json away (RimWorld.runtimeconfig.json), so the built-in reader is used.
+			replacements = System.Text.Json.JsonSerializer.Deserialize<Replacements>(jsonString,
+				new System.Text.Json.JsonSerializerOptions { IncludeFields = true, ReadCommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true });
+#else
 			replacements = JsonConvert.DeserializeObject<Replacements>(jsonString);
+#endif
 
 			//IEnumerable<Assembly> source = from a in AppDomain.CurrentDomain.GetAssemblies()
 			//                               where !a.FullName.StartsWith("Microsoft.VisualStudio")
@@ -858,7 +866,7 @@ namespace RimThreaded
 		{
 			MethodInfo oMethod = Method(original, methodName, origType);
 			if (oMethod == null)
-				throw new MissingMethodException("target method not found in 1.6 assembly");
+				throw new MissingMethodException("target method not found in this RimWorld version");
 
 			Type[] patch_type = null;
 			if (origType != null)
@@ -915,7 +923,7 @@ namespace RimThreaded
 			{
 				MethodInfo oMethod = Method(original, originalMethodName);
 				if (oMethod == null)
-					throw new MissingMethodException("target method not found in 1.6 assembly");
+					throw new MissingMethodException("target method not found in this RimWorld version");
 				if (patchedMethodName == null)
 					patchedMethodName = originalMethodName;
 				MethodInfo pMethod = Method(patched, patchedMethodName);
@@ -943,7 +951,7 @@ namespace RimThreaded
 			{
 				MethodInfo oMethod = Method(original, methodName, origType);
 				if (oMethod == null)
-					throw new MissingMethodException("target method not found in 1.6 assembly");
+					throw new MissingMethodException("target method not found in this RimWorld version");
 				MethodInfo pMethod = Method(patched, patchMethod ?? newMethodName);
 				if (pMethod == null)
 					throw new MissingMethodException("transpiler " + (patchMethod ?? newMethodName) + " not found in " + patched.Name);
@@ -964,7 +972,7 @@ namespace RimThreaded
 			{
 				MethodInfo oMethod = Method(original, methodName, origType);
 				if (oMethod == null)
-					throw new MissingMethodException("target method not found in 1.6 assembly");
+					throw new MissingMethodException("target method not found in this RimWorld version");
 				harmony.Patch(oMethod, transpiler: methodLockTranspiler);
 			}
 			catch (Exception e)

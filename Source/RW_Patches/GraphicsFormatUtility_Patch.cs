@@ -1,4 +1,5 @@
-﻿using System;
+#if !RW17 // only registered in DEBUG builds; the Unity type does not exist in 1.7
+using System;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -43,3 +44,5 @@ namespace RimThreaded.RW_Patches
 
     }
 }
+
+#endif

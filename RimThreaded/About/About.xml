@@ -6,12 +6,14 @@
 	<packageId>majorhoff.rimthreaded</packageId>
 	<supportedVersions>
 		<li>1.6</li>
+		<li>1.7</li>
 	</supportedVersions>
   <description>
     RimThreaded enables RimWorld to utilize multiple threads and thus greatly increases the speed of the game.
 
-    UNOFFICIAL RimWorld 1.6 port (local build, not released by the original author)
-    -Built and patch-validated against RimWorld 1.6.4871 rev590 with Harmony 2.4.3
+    UNOFFICIAL RimWorld 1.6 / 1.7 port (local build, not released by the original author)
+    -1.6: built and patch-validated against RimWorld 1.6.4871 rev590 with Harmony 2.4.3
+    -1.7 (experimental, Waylith engine): built against 1.7.4982 rev1280 (.NET 10) and patch-validated with Harmony 3.0.0-rc.3
     -Not tested in a live game by the porter: report problems with Player.log, not to the original author
     -Based on RimThreaded 2.7.2 (1.4)
 

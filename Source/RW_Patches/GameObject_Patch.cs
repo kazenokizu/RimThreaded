@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -16,7 +16,7 @@ namespace RimThreaded.RW_Patches
             Method(typeof(GameObject), "Internal_CreateGameObject", new[]
                 {typeof(GameObject), typeof(string)});
 
-        private static readonly Action<GameObject, string> ActionInternal_CreateGameObject =
+        private static readonly Action<GameObject, string> ActionInternal_CreateGameObject = methodInternal_CreateGameObject == null ? null :
             (Action<GameObject, string>)Delegate.CreateDelegate(
                 typeof(Action<GameObject, string>), methodInternal_CreateGameObject);
 
@@ -46,6 +46,11 @@ namespace RimThreaded.RW_Patches
 
         public static void RunNonDestructivePatches()
         {
+#if RW17
+            // 1.7 (Waylith): GameObject construction goes through UnityWorld.InitializeGameObject, which holds the world's lock; the Unity
+            // internal call this transpiler redirected (Internal_CreateGameObject) does not exist.
+            return;
+#endif
             Type original = typeof(GameObject);
             Type patched = typeof(GameObject_Patch);
 

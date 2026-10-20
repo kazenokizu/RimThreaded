@@ -18,7 +18,11 @@ namespace RimThreaded
         public static RimThreadedSettings Settings;
         public static string replacementsFolder;
         public static string replacementsJsonPath;
+#if RW17
+        readonly string RWversion = "1.7";
+#else
         readonly string RWversion = "1.6";
+#endif
         public RimThreadedMod(ModContentPack content) : base(content)
         {
             Settings = GetSettings<RimThreadedSettings>();
@@ -158,6 +162,7 @@ namespace RimThreaded
             }
             return modsText;
         }
+#if !RW17 // debug-only export via AssemblyBuilder.Save, which .NET 10 does not have
         public static void ExportTranspiledMethods()
         {
             AssemblyName aName = new AssemblyName("RimWorldTranspiles");
@@ -524,6 +529,7 @@ namespace RimThreaded
                 }
             }
         }
+#endif
 #if false
         public static MethodInfo UpdateWrapper(MethodBase original, ILGenerator il)
         {
