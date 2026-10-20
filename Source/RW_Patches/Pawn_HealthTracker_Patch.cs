@@ -43,42 +43,34 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.harmony.Patch(postApplyDamage, prefix: new HarmonyMethod(postApplyDamageEnterMethod, 1000));
             RimThreadedHarmony.harmony.Patch(postApplyDamage, finalizer: new HarmonyMethod(Method(patched, nameof(PostApplyDamageExit)), -1000));
         }
-        [ThreadStatic] static bool Pawn_HealthTrackerLockTaken;
-        [ThreadStatic] static HediffSet Pawn_HealthTrackerHediffSet;
-        [ThreadStatic] static bool Pawn_HealthTrackerLockTaken2;
-        [ThreadStatic] static HediffSet Pawn_HealthTrackerHediffSet2;
-
-        public static bool CheckForStateChangeMonitorEnter(Pawn_HealthTracker __instance, DamageInfo? dinfo, Hediff hediff)
+        // The monitor taken by a prefix is handed to its finalizer through Harmony's per-call __state. These used one thread-static slot
+        // per method before; PostApplyDamage nests on one thread (damage -> death -> damage to another pawn), so the inner call overwrote
+        // the slot, the outer finalizer exited a monitor it did not hold (SynchronizationLockException, 1.7 Player.log) and the outer
+        // pawn's hediffSet stayed locked for good: the next thread to need it hung and the 8 s watchdog fired.
+        static bool EnterHediffLock(Pawn_HealthTracker instance, string what, out object state)
         {
-            Pawn_HealthTrackerLockTaken = false;
-            Pawn_HealthTrackerHediffSet = __instance.hediffSet;
-            Monitor.TryEnter(Pawn_HealthTrackerHediffSet, RimThreaded.halfTimeoutMS, ref Pawn_HealthTrackerLockTaken);
-            if (Pawn_HealthTrackerLockTaken)
+            state = null;
+            HediffSet set = instance.hediffSet;
+            bool taken = false;
+            Monitor.TryEnter(set, RimThreaded.halfTimeoutMS, ref taken);
+            if (taken)
+            {
+                state = set;
                 return true;
-            Log.Error("RimThreaded.CheckForStateChange was unable to be obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds);
+            }
+            Log.Error("RimThreaded." + what + " was unable to obtain lock for Pawn_HealthTracker: " + instance + " within timeout(MS) : " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds);
             return false;
         }
-        public static void CheckForStateChangeMonitorExit(Pawn_HealthTracker __instance, DamageInfo? dinfo, Hediff hediff)
+
+        static void ExitHediffLock(object state)
         {
-            if (Pawn_HealthTrackerLockTaken)
-                Monitor.Exit(Pawn_HealthTrackerHediffSet);
+            if (state != null) Monitor.Exit(state);
         }
 
-        public static bool PostApplyDamageEnter(Pawn_HealthTracker __instance, DamageInfo dinfo, float totalDamageDealt)
-        {
-            Pawn_HealthTrackerLockTaken2 = false;
-            Pawn_HealthTrackerHediffSet2 = __instance.hediffSet;
-            Monitor.TryEnter(Pawn_HealthTrackerHediffSet2, RimThreaded.halfTimeoutMS, ref Pawn_HealthTrackerLockTaken2);
-            if (Pawn_HealthTrackerLockTaken2)
-                return true;
-            Log.Error("RimThreaded.CheckForStateChange was unable to be obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds);
-            return false;
-        }
-        public static void PostApplyDamageExit(Pawn_HealthTracker __instance, DamageInfo dinfo, float totalDamageDealt)
-        {
-            if (Pawn_HealthTrackerLockTaken2)
-                Monitor.Exit(Pawn_HealthTrackerHediffSet2);
-        }
+        public static bool CheckForStateChangeMonitorEnter(Pawn_HealthTracker __instance, out object __state) => EnterHediffLock(__instance, "CheckForStateChange", out __state);
+        public static void CheckForStateChangeMonitorExit(object __state) => ExitHediffLock(__state);
+        public static bool PostApplyDamageEnter(Pawn_HealthTracker __instance, out object __state) => EnterHediffLock(__instance, "PostApplyDamage", out __state);
+        public static void PostApplyDamageExit(object __state) => ExitHediffLock(__state);
 
         public static bool SetDead(Pawn_HealthTracker __instance)
         {
@@ -171,26 +163,8 @@ namespace RimThreaded.RW_Patches
         }
         // 1.6 port: vanilla Notify_Resurrected (now takes restoreMissingParts/gettingScarsChance and handles scars, mechanoids,
         // forceRemoveOnResurrection and per-hediff callbacks) runs unmodified, serialized on the same monitor the other hediff patches use.
-        [ThreadStatic] static bool resurrectLockTaken;
-        [ThreadStatic] static HediffSet resurrectHediffSet;
-        public static bool Notify_ResurrectedEnter(Pawn_HealthTracker __instance)
-        {
-            resurrectLockTaken = false;
-            resurrectHediffSet = __instance.hediffSet;
-            Monitor.TryEnter(resurrectHediffSet, RimThreaded.halfTimeoutMS, ref resurrectLockTaken);
-            if (resurrectLockTaken)
-                return true;
-            Log.Error("RimThreaded.Notify_Resurrected was unable to obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + (int)RimThreaded.halfTimeoutMS.TotalMilliseconds);
-            return false;
-        }
-        public static void Notify_ResurrectedExit(Pawn_HealthTracker __instance)
-        {
-            if (resurrectLockTaken)
-            {
-                resurrectLockTaken = false;
-                Monitor.Exit(resurrectHediffSet);
-            }
-        }
+        public static bool Notify_ResurrectedEnter(Pawn_HealthTracker __instance, out object __state) => EnterHediffLock(__instance, "Notify_Resurrected", out __state);
+        public static void Notify_ResurrectedExit(object __state) => ExitHediffLock(__state);
 
     }
 }

@@ -469,7 +469,17 @@ namespace RimThreaded
         public static void AbortThread(ThreadInfo threadInfo, Thread thread)
         {
             Log.Error("Thread: " + threadInfo.thread + " did not finish within " + timeoutMS + "ms. Restarting thread...");
-            thread.Abort();
+            try
+            {
+                thread.Abort();
+            }
+            catch (PlatformNotSupportedException)
+            {
+                // .NET (RimWorld 1.7) cannot abort a thread; calling Abort on this watchdog thread crashed the game (crash report
+                // 2026-10-20 15:49:51). The stuck thread is left where it is and replaced: once removed from allWorkerThreads it is
+                // never signalled again, so if it ever unblocks it finishes its current list and parks.
+                Log.Error("RimThreaded: this runtime cannot abort threads; the stuck worker is abandoned and replaced (it is probably waiting on a lock - a RimThreaded bug, please report this log).");
+            }
             allWorkerThreads.Remove(thread);
             CreateWorkerThread();
         }
