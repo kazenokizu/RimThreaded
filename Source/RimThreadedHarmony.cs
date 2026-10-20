@@ -116,6 +116,7 @@ namespace RimThreaded
 			Safe(FullPool_Patch_RunNonDestructivePatches, "FullPool_Patch_RunNonDestructivePatches");
 			Safe(Dijkstra_Patch_RunNonDestructivePatches, "Dijkstra_Patch_RunNonDestructivePatches");
 			Safe(Region_Patch.AddFieldReplacements, "Region_Patch.AddFieldReplacements");
+			Safe(GenericCallSites.Register, "GenericCallSites.Register");
 			replaceFields.Add(Method(typeof(Time), "get_realtimeSinceStartup"), Method(typeof(Time_Patch), nameof(Time_Patch.get_realtimeSinceStartup)));
 			replaceFields.Add(Method(typeof(RenderTexture), nameof(RenderTexture.ReleaseTemporary)), Method(typeof(RenderTexture_Patch), nameof(RenderTexture_Patch.ReleaseTemporary)));
 #if DEBUG
@@ -364,6 +365,13 @@ namespace RimThreaded
 
 							foreach (MethodBase method in allMethods)
 							{
+								// Static constructors are left alone: transpiled, their "stsfld vanillaField" became a write to this thread's
+								// replacement, so the vanilla field stayed null and code that cannot be transpiled (generic methods and
+								// iterators of generic types) read null (1.7 Player.log: NullReferenceException in
+								// ThingOwnerUtility.GetAllThingsRecursively<T> on every tick). Replacements get their per-thread values from
+								// InitializeAllThreadStatics.
+								if (method is ConstructorInfo && method.IsStatic) // note: MethodBase.IsConstructor is false for static constructors
+									continue;
 								if (method.IsDeclaredMember())
 								{
 									try
@@ -371,13 +379,15 @@ namespace RimThreaded
 										IEnumerable<KeyValuePair<OpCode, object>> codeInstructions = PatchProcessor.ReadMethodBody(method);
 										foreach (KeyValuePair<OpCode, object> codeInstruction in codeInstructions)
 										{
+											if (method is ConstructorInfo && (codeInstruction.Key == OpCodes.Stfld || codeInstruction.Key == OpCodes.Stsfld))
+												continue; // constructor stores stay vanilla (see ReplaceFieldsTranspiler)
 											if (codeInstruction.Value is FieldInfo fieldInfo && replaceFields.ContainsKey(fieldInfo))
 											{
 												AssemblyCache.AddToCache(assembly.ManifestModule.ModuleVersionId.ToString() + "_" + cacheKeySuffix, method, type);
 												TranspileFieldReplacements(method);
 												break;
 											}
-											if (codeInstruction.Value is MethodInfo methodInfo && replaceFields.ContainsKey(methodInfo))
+											if (codeInstruction.Value is MethodInfo methodInfo && (replaceFields.ContainsKey(methodInfo) || IsReplacedGenericCall(methodInfo)))
 											{
 												AssemblyCache.AddToCache(assembly.ManifestModule.ModuleVersionId.ToString() + "_" + cacheKeySuffix, method, type);
 												TranspileFieldReplacements(method);
@@ -658,11 +668,26 @@ namespace RimThreaded
 
 		public static readonly Dictionary<object, object> replaceFields = new Dictionary<object, object>();
 
+		// Generic vanilla methods that use replaced static fields cannot be field-replaced themselves (their instantiations run shared code
+		// that Harmony does not reach on the 1.7 runtime; prefixes on instantiations were ignored in-game). Their call sites are redirected
+		// to thread-safe generic versions in the mod instead: generic definition -> replacement generic definition (same type parameters;
+		// an instance method maps to a static one taking the instance first).
+		public static readonly Dictionary<MethodInfo, MethodInfo> replaceGenericMethods = new Dictionary<MethodInfo, MethodInfo>();
+
+		internal static bool IsReplacedGenericCall(MethodInfo m)
+		{
+			return m.IsGenericMethod && !m.IsGenericMethodDefinition && replaceGenericMethods.Count > 0 && replaceGenericMethods.ContainsKey(m.GetGenericMethodDefinition());
+		}
+
 		public static HashSet<object> notifiedObjects = new HashSet<object>();
 
-		public static IEnumerable<CodeInstruction> ReplaceFieldsTranspiler(IEnumerable<CodeInstruction> instructions, ILGenerator iLGenerator)
+		public static IEnumerable<CodeInstruction> ReplaceFieldsTranspiler(IEnumerable<CodeInstruction> instructions, ILGenerator iLGenerator, MethodBase original)
 		{
 			notifiedObjects.Clear();
+			// In constructors the vanilla field keeps its own initial value: a store there is left alone (reads are still replaced).
+			// Redirecting "this.field = new ..." to a per-thread replacement left the vanilla field null for code that cannot be
+			// transpiled (generic methods, iterators of generic types), e.g. Room.ContainedThings<T> reading uniqueContainedThingsOfDef.
+			bool isConstructor = original is ConstructorInfo;
 			foreach (CodeInstruction codeInstruction in instructions)
 			{
 				if (Prefs.LogVerbose)
@@ -670,6 +695,20 @@ namespace RimThreaded
 					Log.messageCount = 0; //prevents logging to stop from spam
 				}
 				object operand = codeInstruction.operand;
+				if (operand is MethodInfo calledGeneric && IsReplacedGenericCall(calledGeneric))
+				{
+					MethodInfo replacement = replaceGenericMethods[calledGeneric.GetGenericMethodDefinition()].MakeGenericMethod(calledGeneric.GetGenericArguments());
+					if (replacement.IsStatic && codeInstruction.opcode == OpCodes.Callvirt)
+						codeInstruction.opcode = OpCodes.Call; // instance method -> static taking the instance as first argument
+					codeInstruction.operand = replacement;
+					yield return codeInstruction;
+					continue;
+				}
+				if (isConstructor && operand is FieldInfo && (codeInstruction.opcode == OpCodes.Stfld || codeInstruction.opcode == OpCodes.Stsfld))
+				{
+					yield return codeInstruction;
+					continue;
+				}
 				if (operand != null && replaceFields.TryGetValue(operand, out object newObjectInfo))
 				{
 					switch (operand)

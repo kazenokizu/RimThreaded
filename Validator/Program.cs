@@ -228,7 +228,7 @@ public static class Program
                 MethodBase mb = AccessTools.Method(ty, parts[1]) ?? (MethodBase)AccessTools.Constructor(ty, null);
                 var before = PatchProcessor.GetOriginalInstructions(mb).ToList();
                 var snapshot = before.Select(i => (i.opcode, i.operand)).ToList();
-                var after = ((IEnumerable<CodeInstruction>)xf.Invoke(null, new object[] { PatchProcessor.GetOriginalInstructions(mb), null })).ToList();
+                var after = ((IEnumerable<CodeInstruction>)xf.Invoke(null, new object[] { PatchProcessor.GetOriginalInstructions(mb), null, mb })).ToList();
                 Console.WriteLine("-- " + spec + " (" + before.Count + " instrs)");
                 for (int i = 0; i < before.Count && i < after.Count; i++)
                     if (!Equals(snapshot[i].operand, after[i].operand) || snapshot[i].opcode != after[i].opcode)
@@ -269,6 +269,63 @@ public static class Program
         foreach (string s in real) Console.WriteLine("  " + s.Replace("\n", " ").Substring(0, Math.Min(600, s.Replace("\n", " ").Length)));
         Console.WriteLine("=== not JIT-verifiable on this runtime (Unity internal call in body, or compiler-generated iterator; the transpiler itself ran): " + ecall.Count);
         foreach (string s in ecall.Take(400)) Console.WriteLine("  " + s.Replace("\n", " ").Substring(0, Math.Min(200, s.Replace("\n", " ").Length)));
+        // Generic methods (or methods of generic types) that read/write replaced fields: field replacement transpiles the open definition,
+        // which the runtime may not use for instantiations, so those bodies can keep using the vanilla static fields.
+        {
+            var rf = (System.Collections.IDictionary)AccessTools.Field(rth, "replaceFields").GetValue(null);
+            var genericUsers = new List<string>();
+            foreach (Type t in SafeTypes(game))
+                foreach (MethodBase m in t.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).Cast<MethodBase>()
+                    .Concat(t.GetConstructors(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)))
+                {
+                    if (!(m.IsGenericMethodDefinition || t.ContainsGenericParameters)) continue;
+                    try
+                    {
+                        foreach (var ci in PatchProcessor.GetOriginalInstructions(m))
+                            if (ci.operand != null && rf.Contains(ci.operand)) { genericUsers.Add(Name(m) + (m.IsGenericMethodDefinition ? "<>" : "") + " uses " + ((MemberInfo)ci.operand).DeclaringType?.Name + "." + ((MemberInfo)ci.operand).Name); break; }
+                    }
+                    catch (Exception e) { if (genericUsers.Count < 0) Console.WriteLine(e.Message); }
+                }
+            Console.WriteLine("=== generic methods touching replaced fields (reflection scan): " + genericUsers.Count);
+            // Vanilla static fields that are replaced must still hold their vanilla value after patching: untranspiled code (generic
+            // methods) reads them. The 1.7 in-game NullReferenceException in GetAllThingsRecursively<T> came from transpiled static constructors.
+            int staticChecked = 0; var nullStatics = new List<string>();
+            foreach (System.Collections.DictionaryEntry de in rf)
+            {
+                if (!(de.Key is FieldInfo vf) || !vf.IsStatic || vf.FieldType.IsValueType) continue;
+                Type dt = vf.DeclaringType;
+                if (dt.ContainsGenericParameters || dt.TypeInitializer == null) continue;
+                bool vanillaNews = false;
+                var ci = PatchProcessor.GetOriginalInstructions(dt.TypeInitializer).ToList();
+                for (int i = 1; i < ci.Count; i++) if (ci[i].opcode == OpCodes.Stsfld && Equals(ci[i].operand, vf) && (ci[i - 1].opcode == OpCodes.Newobj || ci[i - 1].opcode == OpCodes.Newarr)) vanillaNews = true;
+                if (!vanillaNews) continue;
+                try { System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(dt.TypeHandle); } catch (Exception) { continue; }
+                staticChecked++;
+                if (vf.GetValue(null) == null) nullStatics.Add(dt.Name + "." + vf.Name);
+            }
+            Console.WriteLine("=== replaced vanilla static fields left null after their static constructor ran: " + nullStatics.Count + " of " + staticChecked);
+            foreach (string n in nullStatics.Take(30)) Console.WriteLine("  " + n);
+            // call sites of the generic methods handled by GenericCallSites must all be redirected
+            var rg = (System.Collections.IDictionary)AccessTools.Field(rth, "replaceGenericMethods").GetValue(null);
+            int redirected = 0; var stillVanilla = new List<string>();
+            foreach (MethodBase pm in Harmony.GetAllPatchedMethods())
+            {
+                List<CodeInstruction> cur;
+                try { cur = PatchProcessor.GetCurrentInstructions(pm, 1000).ToList(); } catch (Exception) { continue; }
+                foreach (var ins in cur)
+                    if (ins.operand is MethodInfo cm && cm.IsGenericMethod && !cm.IsGenericMethodDefinition)
+                    {
+                        if (rg.Contains(cm.GetGenericMethodDefinition())) stillVanilla.Add(Name(pm) + " -> " + cm.Name);
+                        else if (cm.DeclaringType?.Name == "GenericCallSites") redirected++;
+                    }
+            }
+            Console.WriteLine("=== generic call sites redirected: " + redirected + " (" + rg.Count + " generic methods), still calling the vanilla generic: " + stillVanilla.Count);
+            foreach (string sv in stillVanilla.Take(20)) Console.WriteLine("  " + sv);
+            foreach (string g in genericUsers.OrderBy(x => x)) Console.WriteLine("  " + g);
+            var allP = Harmony.GetAllPatchedMethods().ToList();
+            var cctors = allP.Count(m => m.Name == ".cctor");
+            Console.WriteLine("=== static constructors transpiled: " + cctors);
+        }
         var patched = Harmony.GetAllPatchedMethods().ToList();
         File.WriteAllLines("/tmp/patched_methods_detail.txt", patched.Select(m => { var pi = Harmony.GetPatchInfo(m); string P(IEnumerable<Patch> ps, string k) => string.Join(" ", ps.Where(x => x.owner == "majorhoff.rimthreaded").Select(x => k + ":" + x.PatchMethod.DeclaringType?.Name + "." + x.PatchMethod.Name)); return m.DeclaringType?.FullName + "::" + m.Name + "(" + string.Join(",", m.GetParameters().Select(x => x.ParameterType.Name)) + ")\t" + P(pi.Prefixes, "pre") + " " + P(pi.Postfixes, "post") + " " + P(pi.Transpilers, "tr") + " " + P(pi.Finalizers, "fin"); }));
         File.WriteAllLines("/tmp/patched_methods.txt", patched.Select(m => m.DeclaringType?.FullName + "::" + m.Name + "(" + string.Join(",", m.GetParameters().Select(x => x.ParameterType.Name)) + ")")
@@ -648,6 +705,7 @@ public static class Program
 
     public static readonly List<(MethodBase original, MethodInfo patch, string kind)> Recorded = new List<(MethodBase, MethodInfo, string)>();
     public static readonly List<string> NullLookups = new List<string>();
+    static int cctorTraced;
     public static readonly List<string> PerThreadConstructed = new List<string>();
     public static readonly List<string> StartsNullInVanilla = new List<string>();
     static readonly HashSet<string> LookupNames = new HashSet<string> { "Method", "DeclaredMethod", "Field", "DeclaredField", "Constructor",
@@ -657,6 +715,7 @@ public static class Program
     public static void RecordPatch(Harmony __instance, MethodBase __originalMethod, object[] __args)
     {
         if (__instance.Id != "majorhoff.rimthreaded" || __args == null || __args.Length == 0 || !(__args[0] is MethodBase original)) return;
+        if (original is ConstructorInfo && original.IsStatic && cctorTraced++ == 0) Console.WriteLine("TRACE cctor patch " + Name(original) + "\n" + new System.Diagnostics.StackTrace(1, false));
         ParameterInfo[] ps = __originalMethod.GetParameters();
         for (int i = 1; i < __args.Length && i < ps.Length; i++)
             if (__args[i] is HarmonyMethod hm && hm.method != null)

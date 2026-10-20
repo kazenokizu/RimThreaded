@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -21,31 +21,8 @@ namespace RimThreaded.RW_Patches
             Type patched = typeof(ThingOwnerUtility_Patch);
             RimThreadedHarmony.Prefix(original, patched, nameof(AppendThingHoldersFromThings));
             RimThreadedHarmony.Prefix(original, patched, nameof(GetAllThingsRecursively), new Type[] { typeof(IThingHolder), typeof(List<Thing>), typeof(bool), typeof(Predicate<IThingHolder>) });
-            MethodInfo[] methods = original.GetMethods();
-            MethodInfo GetAllThingsRecursivelyT = null;
-            //MethodInfo originalPawnGetAllThings = original.GetMethod("GetAllThingsRecursively", bf, null, new Type[] { 
-            //	typeof(Map), typeof(ThingRequest), typeof(List<Pawn>), typeof(bool), typeof(Predicate<IThingHolder>), typeof(bool) }, null);
-            foreach (MethodInfo method in methods)
-            {
-                if (method.ToString().Equals("Void GetAllThingsRecursively[T](Verse.Map, Verse.ThingRequest, System.Collections.Generic.List`1[T], Boolean, System.Predicate`1[Verse.IThingHolder], Boolean)"))
-                {
-                    GetAllThingsRecursivelyT = method;
-                    break;
-                }
-            }
-            
-            //MethodInfo originalPawnGetAllThings = methods[17];
-            MethodInfo originalPawnGetAllThingsGeneric = GetAllThingsRecursivelyT.MakeGenericMethod(new Type[] { typeof(Pawn) });
-            MethodInfo patchedPawnGetAllThings = patched.GetMethod(nameof(GetAllThingsRecursively_Pawn));
-            HarmonyMethod prefixPawnGetAllThings = new HarmonyMethod(patchedPawnGetAllThings);
-            RimThreadedHarmony.harmony.Patch(originalPawnGetAllThingsGeneric, prefix: prefixPawnGetAllThings);
-
-            //MethodInfo originalThingGetAllThings = methods[17];
-            MethodInfo originalThingGetAllThingsGeneric = GetAllThingsRecursivelyT.MakeGenericMethod(new Type[] { typeof(Thing) });
-            MethodInfo patchedThingGetAllThings = patched.GetMethod(nameof(GetAllThingsRecursively_Thing));
-            HarmonyMethod prefixThingGetAllThings = new HarmonyMethod(patchedThingGetAllThings);
-            RimThreadedHarmony.harmony.Patch(originalThingGetAllThingsGeneric, prefix: prefixThingGetAllThings);
-            
+            // The generic GetAllThingsRecursively<T>(Map, ...) is handled by redirecting its call sites (GenericCallSites); prefixes on its
+            // <Pawn>/<Thing> instantiations were not used by the 1.7 runtime.
         }
 
         public static bool AppendThingHoldersFromThings(List<IThingHolder> outThingsHolders, IList<Thing> container)
