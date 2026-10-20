@@ -65,7 +65,9 @@ namespace RimThreaded.RW_Patches
                     value = new List<Thing>();
                     __instance.listsByDef.Add(thingDef, value);
                 }
-                value.Add(t);
+                // copy-on-write, like Remove: List.Add raises Count before it stores the item, so a reader on another thread could get
+                // null at the last index (1.7 Player.log: NullReferenceException in GenHostility.HostileTo while scanning a region's list)
+                __instance.listsByDef[thingDef] = CopyWith(value, t);
                 if (t is IHaulSource haulSource)
                 {
                     __instance.haulSources.Add(haulSource);
@@ -78,17 +80,23 @@ namespace RimThreaded.RW_Patches
                         List<Thing> list = __instance.listsByGroup[(uint)thingRequestGroup];
                         if (list == null)
                         {
-                            list = new List<Thing>();
-                            __instance.listsByGroup[(uint)thingRequestGroup] = list;
                             __instance.stateHashByGroup[(uint)thingRequestGroup] = 0;
                         }
-                        list.Add(t);
+                        __instance.listsByGroup[(uint)thingRequestGroup] = CopyWith(list, t);
                         __instance.stateHashByGroup[(uint)thingRequestGroup]++;
                     }
                 }
             }
             __instance.thingListChangedCallbacks?.onThingAdded?.Invoke(t);
             return false;
+        }
+
+        static List<Thing> CopyWith(List<Thing> source, Thing t)
+        {
+            List<Thing> copy = new List<Thing>((source?.Count ?? 0) + 1);
+            if (source != null) copy.AddRange(source);
+            copy.Add(t);
+            return copy;
         }
 
         public static Dictionary<ThingRequestGroup, HashSet<Thing>> thingsRegistered = new Dictionary<ThingRequestGroup, HashSet<Thing>>();

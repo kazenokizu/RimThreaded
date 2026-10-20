@@ -1166,6 +1166,7 @@ namespace RimThreaded
 			Safe(PawnDestinationReservationManager_Patch.RunDestructivePatches, "PawnDestinationReservationManager_Patch.RunDestructivePatches");			
 			Safe(PathFinder_Patch.RunDestructivePatches, "PathFinder_Patch.RunDestructivePatches"); //1.6: FindPathNow runs jobs -> main thread only
 			Safe(PawnTextureAtlas_Patch.RunDestructivePatches, "PawnTextureAtlas_Patch.RunDestructivePatches");
+			Safe(RCellFinder_Patch.RunDestructivePatches, "RCellFinder_Patch.RunDestructivePatches"); //region missing within a tick -> Invalid instead of ArgumentNullException
 			Safe(PawnUtility_Patch.RunDestructivePatches, "PawnUtility_Patch.RunDestructivePatches");
 			Safe(Plant_Patch.RunNonDestructivePatches, "Plant_Patch.RunNonDestructivePatches");
 			Safe(PlayLog_Patch.RunDestructivePatches, "PlayLog_Patch.RunDestructivePatches");

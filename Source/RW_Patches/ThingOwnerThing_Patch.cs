@@ -16,6 +16,62 @@ namespace RimThreaded.RW_Patches
             Type patched = typeof(ThingOwnerThing_Patch);
             RimThreadedHarmony.TranspileLockAdd3(original, "TryAdd", new Type[] { typeof(Thing), typeof(bool) });
             RimThreadedHarmony.Transpile(original, patched, nameof(Remove));
+#if RW17
+            // On 1.7 the two patches above have no effect: methods of the generic class ThingOwner<Thing> keep running the vanilla body
+            // (Player.log: ArgumentOutOfRangeException in ThingOwner`1.Remove from Thing.DeSpawn on several threads at once).
+            // The shared container that every thread writes is Map.spawnedThings; its only in-game writers are Thing.SpawnSetup (TryAdd)
+            // and Thing.DeSpawn (Remove) (MapDeiniter clears it on the main thread). Those two call sites are routed through a lock on the container.
+            RimThreadedHarmony.Transpile(typeof(Thing), patched, nameof(Thing.SpawnSetup), nameof(LockSpawnedThingsCalls));
+            RimThreadedHarmony.Transpile(typeof(Thing), patched, nameof(Thing.DeSpawn), nameof(LockSpawnedThingsCalls));
+#endif
+        }
+
+        static readonly MethodInfo ownerRemove = AccessTools.Method(typeof(ThingOwner), nameof(ThingOwner.Remove), new Type[] { typeof(Thing) });
+        static readonly MethodInfo ownerTryAdd = AccessTools.Method(typeof(ThingOwner), nameof(ThingOwner.TryAdd), new Type[] { typeof(Thing), typeof(bool) });
+        static readonly FieldInfo mapSpawnedThings = AccessTools.Field(typeof(Map), nameof(Map.spawnedThings));
+
+        public static bool LockedRemove(ThingOwner owner, Thing item)
+        {
+            lock (owner)
+                return owner.Remove(item);
+        }
+
+        public static bool LockedTryAdd(ThingOwner owner, Thing item, bool canMergeWithExistingStacks)
+        {
+            lock (owner)
+                return owner.TryAdd(item, canMergeWithExistingStacks);
+        }
+
+        // Replaces "ldfld Map.spawnedThings ... callvirt ThingOwner.Remove/TryAdd" with a call to the locked wrapper. Expects exactly one
+        // such call per method; logs an error and leaves the method unchanged otherwise.
+        public static IEnumerable<CodeInstruction> LockSpawnedThingsCalls(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
+        {
+            List<CodeInstruction> list = instructions.ToList();
+            int replaced = 0;
+            bool sawField = false;
+            List<CodeInstruction> result = new List<CodeInstruction>(list.Count);
+            foreach (CodeInstruction ci in list)
+            {
+                if (ci.opcode == OpCodes.Ldfld && Equals(ci.operand, mapSpawnedThings))
+                    sawField = true;
+                else if (sawField && (ci.opcode == OpCodes.Callvirt || ci.opcode == OpCodes.Call) && (Equals(ci.operand, ownerRemove) || Equals(ci.operand, ownerTryAdd)))
+                {
+                    MethodInfo wrapper = Equals(ci.operand, ownerRemove)
+                        ? AccessTools.Method(typeof(ThingOwnerThing_Patch), nameof(LockedRemove))
+                        : AccessTools.Method(typeof(ThingOwnerThing_Patch), nameof(LockedTryAdd));
+                    result.Add(new CodeInstruction(OpCodes.Call, wrapper) { labels = ci.labels, blocks = ci.blocks });
+                    replaced++;
+                    sawField = false;
+                    continue;
+                }
+                result.Add(ci);
+            }
+            if (replaced != 1)
+            {
+                Log.Error("RimThreaded: " + __originalMethod.DeclaringType + "." + __originalMethod.Name + ": expected 1 spawnedThings call, found " + replaced + "; left unchanged");
+                return list;
+            }
+            return result;
         }
         /*
         public void ThingOwnerTick(bool removeIfDestroyed = true)

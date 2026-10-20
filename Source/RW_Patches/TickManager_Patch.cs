@@ -1,6 +1,7 @@
 using Verse;
 using UnityEngine;
 using System;
+using System.Collections.Generic;
 
 namespace RimThreaded.RW_Patches
 {
@@ -17,6 +18,27 @@ namespace RimThreaded.RW_Patches
         public static bool DoSingleTick(TickManager __instance)
         {
             //RimThreaded.currentInstance = __instance;
+
+            // Same place as vanilla (before the tick counter moves), on the main thread while no worker is ticking:
+            // - MapPreTick runs PathFinder.PathFinderTick -> PathFinderMapData.GatherData, which enumerates the cell-change lists that
+            //   spawns/despawns append to. Run as a worker "prepare" step (WindManagerPrepare) it overlapped other lists' ticks:
+            //   "Collection was modified" in GatherData and "Pathfinder current work queue is not empty" (1.7 Player.log, run 7).
+            // - Region rebuild: workers never rebuild regions (RegionGrid_Patch.GetValidRegionAt), so without this a dirty region stayed
+            //   invalid until the next frame's MapUpdate - hundreds of ticks at high speed - and region queries returned null meanwhile
+            //   (ArgumentNullException 'root' in CellFinder.RandomRegionNear from RCellFinder.SpotToStandDuringJob).
+            List<Map> maps = Find.Maps;
+            for (int i = 0; i < maps.Count; i++)
+            {
+                try
+                {
+                    maps[i].regionAndRoomUpdater.TryRebuildDirtyRegionsAndRooms();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("RimThreaded: region rebuild before tick: " + ex);
+                }
+                maps[i].MapPreTick();
+            }
 
             if (!DebugSettings.fastEcology)
             {

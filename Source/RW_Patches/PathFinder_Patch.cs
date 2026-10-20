@@ -25,6 +25,14 @@ namespace RimThreaded.RW_Patches
             Type poolType = typeof(PawnPathPool);
             RimThreadedHarmony.TranspileMethodLock(poolType, nameof(PawnPathPool.GetPath));
             RimThreadedHarmony.TranspileMethodLock(poolType, nameof(PawnPathPool.ReturnPath));
+            // PathFinderMapData collects changed cells (List + HashSet, per-area lists) from map events: spawns, despawns, reservations,
+            // fog, terrain, area edits. Those events fire on every worker thread at once; GatherData consumes the lists in MapPreTick.
+            Type mapData = typeof(PathFinderMapData);
+            RimThreadedHarmony.TranspileMethodLock(mapData, nameof(PathFinderMapData.Notify_CellDelta), new Type[] { typeof(IntVec3) });
+            RimThreadedHarmony.TranspileMethodLock(mapData, nameof(PathFinderMapData.Notify_CellDelta), new Type[] { typeof(CellRect) });
+            RimThreadedHarmony.TranspileMethodLock(mapData, nameof(PathFinderMapData.Notify_AreaDelta));
+            RimThreadedHarmony.TranspileMethodLock(mapData, nameof(PathFinderMapData.Notify_FactionRemoved));
+            RimThreadedHarmony.TranspileMethodLock(mapData, nameof(PathFinderMapData.GatherData));
         }
 
         public static void RunDestructivePatches()

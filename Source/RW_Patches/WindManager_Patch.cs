@@ -15,7 +15,7 @@ namespace RimThreaded.RW_Patches
             Type patched = typeof(WindManager_Patch);
             // 1.6 port: the 1.4 copy of WindManagerTick lacked the game-condition minimum wind speed (GameCondition.MinWindSpeed) added in 1.5/1.6.
             // Vanilla runs again; its Material.SetFloat calls are routed to the main thread by Material_Patch when made from a worker, which is
-            // also what happened to the 1.4 "parallel" SetFloat loop. WindManagerPrepare still runs MapPreTick for every map.
+            // also what happened to the 1.4 "parallel" SetFloat loop. MapPreTick runs from TickManager_Patch.DoSingleTick.
         }
 
         public static bool WindManagerTick(WindManager __instance)
@@ -54,13 +54,9 @@ namespace RimThreaded.RW_Patches
         //public static List<Material> plantMaterialsList;
         public static int plantMaterialsCount;
         public static float plantSwayHead;
+        // MapPreTick moved to TickManager_Patch.DoSingleTick (main thread, before workers start): it overlapped other lists' ticks here.
         public static void WindManagerPrepare()
         {
-            List<Map> maps = Find.Maps;
-            for (int i = 0; i < maps.Count; i++)
-            {
-                maps[i].MapPreTick();
-            }
         }
 
         public static void WindManagerListTick()

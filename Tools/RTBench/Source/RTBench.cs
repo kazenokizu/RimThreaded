@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using RimWorld;
 using Verse;
 
 namespace RTBench
@@ -14,6 +15,11 @@ namespace RTBench
         internal static string save;
         internal static double warmup = 30, duration = 120, interval = 10;
         internal static bool active;
+        internal static int colonists, meals;
+        internal static bool noIncidents;
+
+        // noincidents=1: no raids, events or quest incidents, so every run measures a colony of the same size
+        public static bool BlockIncident(ref bool __result) { __result = false; return false; }
 
         static int rootPlayStarts, loadGameCalls;
         public static void RootPlayStart() { Log.Message("[RTBENCH] Root_Play.Start #" + (++rootPlayStarts) + "\n" + new StackTrace(1, false)); }
@@ -34,8 +40,11 @@ namespace RTBench
                 else if (k == "warmup") warmup = double.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
                 else if (k == "duration") duration = double.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
                 else if (k == "interval") interval = double.Parse(v, System.Globalization.CultureInfo.InvariantCulture);
+                else if (k == "colonists") colonists = int.Parse(v);
+                else if (k == "meals") meals = int.Parse(v);
+                else if (k == "noincidents") noIncidents = v == "1" || v == "true";
             }
-            Log.Message("[RTBENCH] config: save=" + (save ?? "(none)") + " warmup=" + warmup + " duration=" + duration + " interval=" + interval
+            Log.Message("[RTBENCH] config: save=" + (save ?? "(none)") + " warmup=" + warmup + " duration=" + duration + " interval=" + interval + " colonists=+" + colonists + " meals=" + meals + " noincidents=" + noIncidents
                 + " rimthreaded=" + (ModLister.GetActiveModWithIdentifier("majorhoff.rimthreaded") != null));
             // diagnostics: where null references are thrown (first chance, before any catch hides the frames); first 20 only
             int nre = 0;
@@ -48,6 +57,8 @@ namespace RTBench
             var h = new HarmonyLib.Harmony("nolo.rtbench");
             h.Patch(HarmonyLib.AccessTools.Method(typeof(Root_Play), "Start"), prefix: new HarmonyLib.HarmonyMethod(typeof(RTBenchStartup), nameof(RootPlayStart)));
             h.Patch(HarmonyLib.AccessTools.Method(typeof(GameDataSaveLoader), "LoadGame", new[] { typeof(string) }), prefix: new HarmonyLib.HarmonyMethod(typeof(RTBenchStartup), nameof(LoadGameCalled)));
+            if (noIncidents)
+                h.Patch(HarmonyLib.AccessTools.Method(typeof(RimWorld.IncidentWorker), "TryExecute"), prefix: new HarmonyLib.HarmonyMethod(typeof(RTBenchStartup), nameof(BlockIncident)));
             if (!string.IsNullOrEmpty(save))
                 LongEventHandler.ExecuteWhenFinished(() => GameDataSaveLoader.LoadGame(save));
         }
@@ -57,6 +68,31 @@ namespace RTBench
 
     public class RTBenchComponent : GameComponent
     {
+        // Test copy only (the save on disk is never written): names the faction/settlements so the naming dialog (opened every 1000 ticks
+        // otherwise) stays closed, then adds colonists and food so the colony is large and stays alive for the whole run.
+        static void PrepareColony(Map map)
+        {
+            if (!Faction.OfPlayer.HasName) Faction.OfPlayer.Name = "RTBench Colony";
+            foreach (RimWorld.Planet.Settlement s in Find.WorldObjects.Settlements)
+                if (s.Faction == Faction.OfPlayer) s.namedByPlayer = true;
+            Pawn anchor = map.mapPawns.FreeColonistsSpawned.Count > 0 ? map.mapPawns.FreeColonistsSpawned[0] : null;
+            IntVec3 center = anchor != null ? anchor.Position : map.Center;
+            for (int i = 0; i < RTBenchStartup.colonists; i++)
+            {
+                Pawn p = PawnGenerator.GeneratePawn(PawnKindDefOf.Colonist, Faction.OfPlayer);
+                GenSpawn.Spawn(p, CellFinder.RandomClosewalkCellNear(center, map, 8), map);
+            }
+            int left = RTBenchStartup.meals;
+            while (left > 0)
+            {
+                Thing meal = ThingMaker.MakeThing(ThingDefOf.MealSurvivalPack);
+                meal.stackCount = Math.Min(left, meal.def.stackLimit);
+                left -= meal.stackCount;
+                GenPlace.TryPlaceThing(meal, center, map, ThingPlaceMode.Near);
+            }
+            Log.Message("[RTBENCH] colony prepared: +" + RTBenchStartup.colonists + " colonists, " + RTBenchStartup.meals + " meals; colonists now " + map.mapPawns.FreeColonistsCount + ", pawns " + map.mapPawns.AllPawnsSpawnedCount);
+        }
+
         Stopwatch clock;
         int startTicks, lastTicks, frames, lastFrames;
         double lastMark;
@@ -75,6 +111,7 @@ namespace RTBench
                 typeof(TickManager).GetField("UltraSpeedBoost", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static)?.SetValue(null, true);
                 // no automatic drop to 1x during combat (vanilla dev setting; applies with and without RimThreaded)
                 DebugViewSettings.neverForceNormalSpeed = true;
+                PrepareColony(Find.CurrentMap);
                 Log.Message("[RTBENCH] map ready at tick " + tm.TicksGame + "; colonists " + Find.CurrentMap.mapPawns.FreeColonistsCount + ", pawns " + Find.CurrentMap.mapPawns.AllPawnsSpawnedCount);
             }
             // unattended: dialogs that force a pause (letters with choices, quest offers, game-over screens) would stop the clock
@@ -110,7 +147,7 @@ namespace RTBench
             {
                 done = true;
                 double span = t - RTBenchStartup.warmup;
-                Log.Message($"[RTBENCH] RESULT ticks={tm.TicksGame - startTicks} seconds={span:F1} avg_tps={(tm.TicksGame - startTicks) / span:F1} avg_fps={frames / span:F1}");
+                Log.Message($"[RTBENCH] RESULT ticks={tm.TicksGame - startTicks} seconds={span:F1} avg_tps={(tm.TicksGame - startTicks) / span:F1} avg_fps={frames / span:F1} colonists_end={Find.CurrentMap?.mapPawns.FreeColonistsCount} pawns_end={Find.CurrentMap?.mapPawns.AllPawnsSpawnedCount}");
                 Root.Shutdown();
             }
         }
