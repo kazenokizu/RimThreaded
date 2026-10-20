@@ -22,7 +22,11 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Transpile(original, patched, nameof(RemoveHediff));
             RimThreadedHarmony.Prefix(original, patched, nameof(RestorePartRecursiveInt));
             RimThreadedHarmony.Prefix(original, patched, nameof(CheckPredicateAfterAddingHediff));
-            RimThreadedHarmony.Prefix(original, patched, nameof(Notify_Resurrected));
+            MethodInfo notifyResurrected = Method(original, "Notify_Resurrected");
+            MethodInfo notifyResurrectedEnter = Method(patched, nameof(Notify_ResurrectedEnter));
+            RimThreadedHarmony.nonDestructivePrefixes.Add(notifyResurrectedEnter);
+            RimThreadedHarmony.harmony.Patch(notifyResurrected, prefix: new HarmonyMethod(notifyResurrectedEnter, 1000));
+            RimThreadedHarmony.harmony.Patch(notifyResurrected, finalizer: new HarmonyMethod(Method(patched, nameof(Notify_ResurrectedExit)), -1000));
             // 1.6: HealthTick/HealthTickInterval left vanilla. They iterate per-pawn temp copies, and all list
             // mutation goes through the copy-on-write patches above (RemoveHediff / HediffSet.AddDirect).
             RimThreadedHarmony.Prefix(original, patched, nameof(SetDead)); //optional warning instead of error
@@ -165,38 +169,27 @@ namespace RimThreaded.RW_Patches
             }
             return false;
         }
-        public static bool Notify_Resurrected(Pawn_HealthTracker __instance)
+        // 1.6 port: vanilla Notify_Resurrected (now takes restoreMissingParts/gettingScarsChance and handles scars, mechanoids,
+        // forceRemoveOnResurrection and per-hediff callbacks) runs unmodified, serialized on the same monitor the other hediff patches use.
+        [ThreadStatic] static bool resurrectLockTaken;
+        [ThreadStatic] static HediffSet resurrectHediffSet;
+        public static bool Notify_ResurrectedEnter(Pawn_HealthTracker __instance)
         {
-            lock (__instance.hediffSet) //added
-            {
-                List<Hediff> newHediffs = new List<Hediff>(__instance.hediffSet.hediffs); //added
-                __instance.healthState = PawnHealthState.Mobile;
-                newHediffs.RemoveAll(x => x.def.everCurableByItem && x.TryGetComp<HediffComp_Immunizable>() != null);
-                newHediffs.RemoveAll(x => x.def.everCurableByItem && x is Hediff_Injury && !x.IsPermanent());
-                newHediffs.RemoveAll(x =>
-                {
-                    if (!x.def.everCurableByItem)
-                        return false;
-                    if (x.def.lethalSeverity >= 0.0)
-                        return true;
-                    return x.def.stages != null && x.def.stages.Any(y => y.lifeThreatening);
-                });
-                newHediffs.RemoveAll(x => x.def.everCurableByItem && x is Hediff_Injury && x.IsPermanent() && (double)__instance.hediffSet.GetPartHealth(x.Part) <= 0.0);
-                __instance.hediffSet.hediffs = newHediffs; //added
-                while (true)
-                {
-                    Hediff_MissingPart hediffMissingPart = __instance.hediffSet.GetMissingPartsCommonAncestors().Where(x => !__instance.hediffSet.PartOrAnyAncestorHasDirectlyAddedParts(x.Part)).FirstOrDefault();
-                    if (hediffMissingPart != null)
-                        __instance.RestorePart(hediffMissingPart.Part, checkStateChange: false);
-                    else
-                        break;
-                }
-                __instance.hediffSet.DirtyCache();
-                if (__instance.ShouldBeDead())
-                    __instance.hediffSet.hediffs.RemoveAll(h => !h.def.keepOnBodyPartRestoration);
-                __instance.Notify_HediffChanged(null);
-            }
+            resurrectLockTaken = false;
+            resurrectHediffSet = __instance.hediffSet;
+            Monitor.TryEnter(resurrectHediffSet, RimThreaded.halfTimeoutMS, ref resurrectLockTaken);
+            if (resurrectLockTaken)
+                return true;
+            Log.Error("RimThreaded.Notify_Resurrected was unable to obtain lock for Pawn_HealthTracker: " + __instance + " within timeout(MS) : " + RimThreaded.halfTimeoutMS.ToString());
             return false;
+        }
+        public static void Notify_ResurrectedExit(Pawn_HealthTracker __instance)
+        {
+            if (resurrectLockTaken)
+            {
+                resurrectLockTaken = false;
+                Monitor.Exit(resurrectHediffSet);
+            }
         }
 
     }

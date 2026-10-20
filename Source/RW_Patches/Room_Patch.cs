@@ -1,47 +1,61 @@
-﻿using RimWorld;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Verse;
 
 namespace RimThreaded.RW_Patches
 {
-
-    public class Room_Patch
+    // 1.6 port. Removed 1.4 copies that had drifted: AddDistrict/RemoveDistrict wrote RegionGrid.allRooms directly, bypassing 1.6's
+    // RegionGrid.RoomAdded/RoomRemoved (which also maintain roomLookup by room ID); UpdateRoomStatsAndRole used the old 36-region limit
+    // (1.6: 60) so mid-size rooms got no stats/role; Notify_RoofChanged lacked the vacuum caches. Vanilla now runs serialized on
+    // RoomDistrictLock (see District_Patch.cs). Kept: null-safe Fogged and an allocation-per-call ContainedAndAdjacentThings.
+    // Added: Regions returns a fresh list (vanilla's tmpRegions is thread-static via replacements_1.6.json, i.e. one list per thread shared by
+    // every room, so nested calls on two rooms would overwrite each other), and the 1.6 Vacuum setter broadcasts to the room's things itself
+    // (vanilla used uniqueContainedThings, which the ContainedAndAdjacentThings replacement never fills). The old copy is in removed_1.6/.
+    class Room_Patch
     {
-
         internal static void RunDestructivePatches()
         {
             Type original = typeof(Room);
             Type patched = typeof(Room_Patch);
-            RimThreadedHarmony.Prefix(original, patched, nameof(AddDistrict));
-            RimThreadedHarmony.Prefix(original, patched, nameof(RemoveDistrict));
-            RimThreadedHarmony.Prefix(original, patched, nameof(Notify_RoofChanged));
-            RimThreadedHarmony.Prefix(original, patched, nameof(UpdateRoomStatsAndRole));
-
+            RoomDistrictLock.Patch(original, nameof(Room.AddDistrict));
+            RoomDistrictLock.Patch(original, nameof(Room.RemoveDistrict));
+            RoomDistrictLock.Patch(original, nameof(Room.Notify_RoofChanged));
+            RoomDistrictLock.Patch(original, nameof(Room.Notify_TerrainChanged));
+            RoomDistrictLock.Patch(original, "UpdateRoomStatsAndRole");
+            RoomDistrictLock.Patch(original, "OpenRoofCountStopAt");
+            RoomDistrictLock.Patch(original, "ExposedCountStopAt");
             RimThreadedHarmony.Prefix(original, patched, nameof(get_Fogged));
-
-
             RimThreadedHarmony.Prefix(original, patched, nameof(get_ContainedAndAdjacentThings));
-            //RimThreadedHarmony.Postfix(original, patched, nameof(get_Regions));
+            RimThreadedHarmony.Prefix(original, patched, nameof(get_Regions));
+            RimThreadedHarmony.Prefix(original, patched, nameof(set_Vacuum));
         }
-        //tmpRegions && uniqueContainedThingsOfDef can't be threadstatic
-        public static void get_Regions(Room __instance, ref List<Region> __result)
+
+        public static bool get_Regions(Room __instance, ref List<Region> __result)
         {
-            //return a copy of the list instead of the actually list
-            //this is caused by a bad mod that tries to modify the returned list
-            if (__result != null)
+            List<Region> result = new List<Region>();
+            lock (RoomDistrictLock.Monitor)
             {
-                lock (__instance)
-                {
-                    List<Region> tmp = __result;
-                    __result = new List<Region>(tmp);
-                    //__result.Clear();
-                    //__result.AddRange(tmp);
-                    //__result = new List<Region>(__result);
-                }
+                List<District> districts = __instance.districts;
+                for (int i = 0; i < districts.Count; i++)
+                    result.AddRange(districts[i].Regions);
             }
+            __result = result;
+            return false;
         }
+
+        public static bool set_Vacuum(Room __instance, float value)
+        {
+            __instance.vacuum = UnityEngine.Mathf.Clamp(value, -0.1f, 1f);
+            List<Thing> things = new List<Thing>();
+            get_ContainedAndAdjacentThings(__instance, ref things);
+            foreach (Thing thing in things)
+            {
+                if (thing is ThingWithComps thingWithComps)
+                    thingWithComps.BroadcastCompSignal("Vacuum");
+            }
+            return false;
+        }
+
         public static bool get_ContainedAndAdjacentThings(Room __instance, ref List<Thing> __result)//fixes problems with rimfridge.
         {
             HashSet<Thing> uniqueContainedThingsSet = new HashSet<Thing>();
@@ -66,6 +80,7 @@ namespace RimThreaded.RW_Patches
             __result = uniqueContainedThings;
             return false;
         }
+
         public static bool get_Fogged(Room __instance, ref bool __result)
         {
             __result = false;
@@ -83,97 +98,5 @@ namespace RimThreaded.RW_Patches
             __result = pos.Fogged(tmpMap);
             return false;
         }
-        public static bool UpdateRoomStatsAndRole(Room __instance)
-        {
-            lock (__instance)
-            {
-                __instance.statsAndRoleDirty = false;
-                if (__instance.ProperRoom && __instance.RegionCount <= 36)
-                {
-                    DefMap<RoomStatDef, float> stats = __instance.stats;
-                    if (stats == null)
-                        stats = new DefMap<RoomStatDef, float>();
-                    foreach (RoomStatDef def in DefDatabase<RoomStatDef>.AllDefs.OrderByDescending(x => x.updatePriority))
-                        stats[def] = def.Worker.GetScore(__instance);
-                    __instance.role = DefDatabase<RoomRoleDef>.AllDefs.MaxBy(x => x.Worker.GetScore(__instance));
-                    __instance.stats = stats;
-                }
-                else
-                {
-                    __instance.stats = null;
-                    __instance.role = RoomRoleDefOf.None;
-                }
-            }
-            return false;
-        }
-
-        public static bool AddDistrict(Room __instance, District district)
-        {
-            bool newRoom = false; //ADDED
-            lock (__instance) //ADDED
-            {
-                if (__instance.districts.Contains(district))
-                {
-                    Log.Error(string.Concat("Tried to add the same district twice to Room. district=", district, ", room=", __instance));
-                }
-                else
-                {
-                    __instance.districts.Add(district);
-                    if (__instance.districts.Count == 1)
-                    {
-                        newRoom = true;
-                    }
-                }
-            }
-            if (newRoom)
-            {
-                lock (__instance.Map.regionGrid)
-                {
-                    __instance.Map.regionGrid.allRooms.Add(__instance);
-                }
-            }
-            return false;
-        }
-        public static bool RemoveDistrict(Room __instance, District district)
-        {
-            lock (__instance) //ADDED
-            {
-                if (!__instance.districts.Contains(district))
-                {
-                    Log.Error(string.Concat("Tried to remove district from Room but this district is not here. district=", district, ", room=", __instance));
-                    return false;
-                }
-
-                Map map = __instance.Map;
-
-                List<District> newDistrictList = new List<District>(__instance.districts);
-                newDistrictList.Remove(district);
-                __instance.districts = newDistrictList;
-
-                if (newDistrictList.Count == 0)
-                {
-
-                    lock (map.regionGrid) //ADDED
-                    {
-                        List<Room> newAllRooms = new List<Room>(map.regionGrid.allRooms);
-                        newAllRooms.Remove(__instance);
-                        map.regionGrid.allRooms = newAllRooms;
-                    }
-                }
-
-                __instance.statsAndRoleDirty = true;
-            }
-            return false;
-        }
-        public static bool Notify_RoofChanged(Room __instance)
-        {
-            lock (__instance)
-            {
-                __instance.cachedOpenRoofCount = -1;
-                __instance.tempTracker.RoofChanged();
-            }
-            return false;
-        }
-
     }
 }

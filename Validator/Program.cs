@@ -1,3 +1,4 @@
+using System.Threading;
 // RimThreaded patch validator: runs the mod's real patch registration (Harmony) against the real RimWorld
 // Assembly-CSharp.dll on .NET 8, without launching the game. Harmony JIT-compiles every patched method when it
 // installs it, so missing targets, wrong patch signatures and invalid transpiler IL all surface here as exceptions.
@@ -160,6 +161,9 @@ public static class Program
         Console.WriteLine("=== methods patched in process: " + patched.Count);
         SignatureCheck(patched);
         NoOpTranspilerCheck(patched);
+        if (Environment.GetEnvironmentVariable("DRIFT") == "1") DriftCheck(patched);
+        DroppedParamCheck(patched);
+        LockCoverageCheck(game);
         Console.WriteLine("=== patched iterator/closure methods: " + string.Join(", ", patched.Where(m => m.DeclaringType.Name.Contains(">d__")).Select(m => m.DeclaringType.DeclaringType?.Name + "." + m.DeclaringType.Name)));
         return real.Count == 0 ? 0 : 1;
     }
@@ -270,6 +274,109 @@ public static class Program
         }
         Console.WriteLine("=== transpiler no-op check: " + examined + " transpiled methods examined, unchanged bodies: " + noops.Count);
         foreach (string s in noops.Distinct()) Console.WriteLine("  " + s);
+    }
+
+
+    // For prefixes that skip the original (return false), list the members the vanilla 1.6 body touches that the replacement never touches.
+    static void DriftCheck(List<MethodBase> patched)
+    {
+        var lines = new List<(int, string)>();
+        HashSet<string> Keys(MethodBase m)
+        {
+            var set = new HashSet<string>();
+            foreach (var ci in PatchProcessor.GetOriginalInstructions(m))
+            {
+                if (ci.operand is MemberInfo mi && (ci.opcode == OpCodes.Call || ci.opcode == OpCodes.Callvirt || ci.opcode == OpCodes.Ldfld || ci.opcode == OpCodes.Stfld || ci.opcode == OpCodes.Ldsfld || ci.opcode == OpCodes.Stsfld || ci.opcode == OpCodes.Newobj || ci.opcode == OpCodes.Ldflda || ci.opcode == OpCodes.Ldsflda))
+                {
+                    string t = mi.DeclaringType?.Name ?? "";
+                    if (t.Contains("<>") || t.StartsWith("Enumerator") || mi.Name == "get_Item" || mi.Name == "get_Count" || mi.Name == ".ctor") continue;
+                    set.Add(t + "::" + mi.Name);
+                }
+            }
+            return set;
+        }
+        foreach (MethodBase original in patched)
+        {
+            Patches info = Harmony.GetPatchInfo(original);
+            if (info == null) continue;
+            foreach (var pre in info.Prefixes.Where(x => x.PatchMethod.DeclaringType.Assembly.GetName().Name == "RimThreaded"))
+            {
+                var ins = PatchProcessor.GetOriginalInstructions(pre.PatchMethod).ToList();
+                bool skips = false;
+                for (int i = 0; i + 1 < ins.Count; i++) if (ins[i].opcode == OpCodes.Ldc_I4_0 && ins[i + 1].opcode == OpCodes.Ret) skips = true;
+                if (!skips || pre.PatchMethod.ReturnType != typeof(bool)) continue;
+                try
+                {
+                    var o = Keys(original); var pk = Keys(pre.PatchMethod);
+                    var missing = o.Where(k => !pk.Contains(k)).OrderBy(k => k).ToList();
+                    lines.Add((missing.Count, Name(original) + " <- " + pre.PatchMethod.DeclaringType.Name + " : vanilla touches " + o.Count + ", missing " + missing.Count + " : " + string.Join(", ", missing)));
+                }
+                catch (Exception e) { lines.Add((-1, Name(original) + " could not be analysed: " + e.GetType().Name)); }
+            }
+        }
+        File.WriteAllLines("/tmp/drift.txt", lines.OrderByDescending(l => l.Item1).Select(l => l.Item2));
+        Console.WriteLine("=== drift check: " + lines.Count + " destructive prefixes analysed -> /tmp/drift.txt");
+    }
+
+
+    // A destructive prefix that omits parameters of the original cannot reproduce them (e.g. new 1.6 arguments with defaults).
+    static void DroppedParamCheck(List<MethodBase> patched)
+    {
+        var rows = new List<string>();
+        foreach (MethodBase original in patched)
+        {
+            Patches info = Harmony.GetPatchInfo(original);
+            if (info == null) continue;
+            int origCount = original.GetParameters().Length;
+            foreach (var pre in info.Prefixes.Where(x => x.PatchMethod.DeclaringType.Assembly.GetName().Name == "RimThreaded"))
+            {
+                var ins = PatchProcessor.GetOriginalInstructions(pre.PatchMethod).ToList();
+                bool skips = false;
+                for (int i = 0; i + 1 < ins.Count; i++) if (ins[i].opcode == OpCodes.Ldc_I4_0 && ins[i + 1].opcode == OpCodes.Ret) skips = true;
+                if (!skips) continue;
+                var names = original.GetParameters().Select(x => x.Name).ToHashSet();
+                var pnames = pre.PatchMethod.GetParameters().Select(x => x.Name).ToHashSet();
+                var dropped = names.Where(n => !pnames.Contains(n)).ToList();
+                if (dropped.Count > 0) rows.Add(Name(original) + " <- " + pre.PatchMethod.DeclaringType.Name + " drops: " + string.Join(",", dropped));
+            }
+        }
+        Console.WriteLine("=== destructive prefixes that omit original parameters: " + rows.Count);
+        foreach (string r in rows.OrderBy(x => x)) Console.WriteLine("  " + r);
+    }
+
+
+    public static bool SkipCctor() => false;
+
+    // Functional check of WrapMethodInInstanceLock on a real 1.6 method: it must wait for a monitor held by another thread and keep the return value.
+    static void LockCoverageCheck(Assembly game)
+    {
+        try
+        {
+            Type rmType = game.GetType("Verse.AI.ReservationManager");
+            new Harmony("validator.cctor").Patch(rmType.TypeInitializer, prefix: new HarmonyMethod(typeof(Program).GetMethod(nameof(SkipCctor))));
+            object rm = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(rmType);
+            Type resType = game.GetType("Verse.AI.ReservationManager+Reservation");
+            var list = (System.Collections.IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(resType));
+            AccessTools.Field(rmType, "reservations").SetValue(rm, list);
+            Type lti = game.GetType("Verse.LocalTargetInfo");
+            Type iv3 = game.GetType("Verse.IntVec3");
+            object cellA = Activator.CreateInstance(lti, Activator.CreateInstance(iv3, 3, 0, 4));
+            object cellB = Activator.CreateInstance(lti, Activator.CreateInstance(iv3, 9, 0, 9));
+            object res = Activator.CreateInstance(resType, null, null, 1, -1, cellA, null);
+            list.Add(res);
+            MethodInfo isReserved = AccessTools.Method(rmType, "IsReserved");
+            foreach (var (label, arg, expected) in new[] { ("IsReserved(reserved cell)", cellA, true), ("IsReserved(free cell)", cellB, false) })
+            {
+                var held = new ManualResetEventSlim();
+                var t = new Thread(() => { lock (rm) { held.Set(); Thread.Sleep(1500); } });
+                t.Start(); held.Wait();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                bool got = (bool)isReserved.Invoke(rm, new object[] { arg });
+                sw.Stop(); t.Join();
+                Console.WriteLine("=== lock coverage: " + label + " waited " + sw.ElapsedMilliseconds + " ms (" + (sw.ElapsedMilliseconds > 1000 ? "LOCKED" : "NOT LOCKED") + "), returned " + got + " (" + (got == expected ? "correct" : "WRONG") + ")");
+            }
+        }
+        catch (Exception e) { while (e.InnerException != null) e = e.InnerException; Console.WriteLine("=== lock coverage check failed: " + e.GetType().Name + ": " + e.Message); }
     }
 
     static string Name(MethodBase m) => m.DeclaringType?.Name + "." + m.Name;

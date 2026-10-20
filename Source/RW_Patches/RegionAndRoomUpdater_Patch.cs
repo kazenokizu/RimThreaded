@@ -1,105 +1,71 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Threading;
+using HarmonyLib;
 using Verse;
-using System.Collections.Concurrent;
+using static HarmonyLib.AccessTools;
 
 namespace RimThreaded.RW_Patches
 {
-
+    // 1.6 port. The 1.4 replacement of TryRebuildDirtyRegionsAndRooms read the mod's own dirty-cell queue and lacked 1.6's
+    // map.events.Notify_RegionsRoomsChanged() and newRegions.Clear(). Vanilla now runs; the whole rebuild holds the map's RegionDirtyer
+    // monitor (the same one every RegionDirtyer method takes), which serializes rebuilds and keeps DirtyCells stable while it is iterated.
+    // The wait is bounded: if the monitor is not obtained in time the rebuild is skipped (vanilla does the same while "working"), and
+    // Map.MapUpdate retries it next frame. The old copy is in removed_1.6/.
     public class RegionAndRoomUpdater_Patch
     {
-        [ThreadStatic] public static bool working;
-        [ThreadStatic] public static HashSet<Room> tmpVisitedRooms;
-        [ThreadStatic] public static ConcurrentQueue<IntVec3> cellsToReset;
+        internal static void InitializeThreadStatics() { }
 
-        static readonly Type original = typeof(RegionAndRoomUpdater);
-        static readonly Type patched = typeof(RegionAndRoomUpdater_Patch);
-        internal static void InitializeThreadStatics()
-        {
-            cellsToReset = new ConcurrentQueue<IntVec3>();
-        }
+        [ThreadStatic] static Stack<object> heldLocks;
+        static Stack<object> HeldLocks => heldLocks ?? (heldLocks = new Stack<object>());
+        static volatile bool warnedTimeout;
 
         internal static void RunDestructivePatches()
         {
-            RimThreadedHarmony.Prefix(original, patched, nameof(TryRebuildDirtyRegionsAndRooms));
+            Type original = typeof(RegionAndRoomUpdater);
+            foreach (string name in new[] { "TryRebuildDirtyRegionsAndRooms", "RebuildAllRegionsAndRooms" })
+            {
+                MethodInfo target = Method(original, name);
+                if (target == null)
+                {
+                    Log.Error("RimThreaded PATCH FAILED [RegionAndRoomUpdater." + name + "]: method not found");
+                    continue;
+                }
+                MethodInfo enter = Method(typeof(RegionAndRoomUpdater_Patch), nameof(Enter));
+                RimThreadedHarmony.nonDestructivePrefixes.Add(enter);
+                RimThreadedHarmony.harmony.Patch(target, prefix: new HarmonyMethod(enter, 1000),
+                    finalizer: new HarmonyMethod(Method(typeof(RegionAndRoomUpdater_Patch), nameof(Exit)), -1000));
+            }
         }
 
-        public static HashSet<IntVec3> cellsWithNewRegions = new HashSet<IntVec3>();
-        public static List<Region> regionsToReDirty = new List<Region>();
-        public static bool TryRebuildDirtyRegionsAndRooms(RegionAndRoomUpdater __instance)
+        public static bool Enter(RegionAndRoomUpdater __instance)
         {
-            if (!__instance.Enabled || working) return false;
-            working = true;
-            if (!__instance.initialized)
+            object monitor = __instance.map?.regionDirtyer;
+            if (monitor == null)
             {
-                lock (__instance)
-                {
-                    __instance.RebuildAllRegionsAndRooms();
-                }
+                HeldLocks.Push(null);
+                return true;
             }
-            ConcurrentQueue<IntVec3> dirtyCells = RegionDirtyer_Patch.get_DirtyCells(__instance.map.regionDirtyer);
-            if (dirtyCells.Count == 0)
+            if (Monitor.TryEnter(monitor, RimThreaded.halfTimeoutMS))
             {
-                working = false;
-                return false;
+                HeldLocks.Push(monitor);
+                return true;
             }
-            lock (__instance)
+            HeldLocks.Push(null);
+            if (!warnedTimeout)
             {
-                try
-                {
-                    RegenerateNewRegionsFromDirtyCells2(__instance, dirtyCells);
-
-                    __instance.CreateOrUpdateRooms();
-                    //1. FloodAndSetNewRegionIndex (newRegions)
-                    //2. CreateOrAttachToExistingDistricts
-                    //   add each (newRegion) to (currentRegionGroup)
-                    //   add each (currentRegionGroup) to (newDistricts)/(reusedOldDistricts)
-                    //3. CombineNewAndReusedDistrictsIntoContiguousRooms
-                    //   foreach each (newDistricts)/(reusedOldDistricts).newOrReusedRoomIndex, update(district.Neighbors.newOrReusedRoomIndex)
-                    //4. CreateOrAttachToExistingRooms
-                    //   add each (reusedOldDistrict) to (currentDistrictGroup)
-                    //   add each (newDistrict) to (currentDistrictGroup)
-                    //   add each (currentDistrictGroup.RoomNeighbor) to (newRooms)/(reusedOldRooms)
-                    //5. NotifyAffectedDistrictsAndRoomsAndUpdateTemperature
-                }
-                catch (Exception arg) { Log.Error("Exception while rebuilding dirty regions: " + arg); }
-                while (cellsToReset.TryDequeue(out IntVec3 dirtyCell))
-                {
-                    __instance.map.TemperatureVacuumCache.ResetCachedCellInfo(dirtyCell);
-                }
-                __instance.initialized = true;
-                working = false;
+                warnedTimeout = true;
+                Log.Warning("RimThreaded: region rebuild skipped, region lock not obtained within " + RimThreaded.halfTimeoutMS + " ms (retried next frame; logged once).");
             }
-            //regionCleaning.Set();
-
-            if (DebugSettings.detectRegionListersBugs) Autotests_RegionListers.CheckBugs(__instance.map);
             return false;
         }
 
-        private static void RegenerateNewRegionsFromDirtyCells2(RegionAndRoomUpdater __instance, ConcurrentQueue<IntVec3> dirtyCells)
+        public static void Exit(RegionAndRoomUpdater __instance)
         {
-            cellsWithNewRegions.Clear();
-            List<Region> newRegions = __instance.newRegions;
-            newRegions.Clear();
-            Map localMap = __instance.map;
-            while (dirtyCells.TryDequeue(out IntVec3 dirtyCell))
-            {
-                cellsToReset.Enqueue(dirtyCell);
-            }
-            foreach (IntVec3 dirtyCell in cellsToReset)
-            {
-                Region oldRegion = dirtyCell.GetRegion(localMap, RegionType.Set_All);
-                if (oldRegion == null)
-                {
-                    Region region = localMap.regionMaker.TryGenerateRegionFrom(dirtyCell);
-                    if (region != null)
-                    {
-                        newRegions.Add(region);
-                    }
-                }
-            }
+            if (HeldLocks.Count == 0) return;
+            object monitor = HeldLocks.Pop();
+            if (monitor != null) Monitor.Exit(monitor);
         }
-
-
     }
 }

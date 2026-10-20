@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Verse;
 
@@ -11,39 +11,19 @@ namespace RimThreaded.RW_Patches
             Type original = typeof(RegionGrid);
             Type patched = typeof(RegionGrid_Patch);
             RimThreadedHarmony.Prefix(original, patched, nameof(GetValidRegionAt));
-            RimThreadedHarmony.Prefix(original, patched, nameof(SetRegionAt));
             RimThreadedHarmony.Prefix(original, patched, nameof(UpdateClean));
         }
 
-        public static bool SetRegionAt(RegionGrid __instance, IntVec3 c, Region reg)
-        {
-            int index = __instance.map.cellIndices.CellToIndex(c);
-
-            if (false && Prefs.LogVerbose)
-            {
-                if (Log.messageCount > 900)
-                    Log.Clear();
-                Region old = __instance.regionGrid[index];
-                string oldString = "null";
-                if (old != null)
-                    oldString = old.ToString();
-                Log.Message("c:" + c.ToString() + " old:" + oldString + " new:" + reg.ToString());
-            }
-
-            Region oldRegion = __instance.regionGrid[index];
-            if (oldRegion != null)
-            {
-                HashSet<IntVec3> oldRegionCells = Region_Patch.GetRegionCells(oldRegion);
-                oldRegionCells.Remove(c);
-            }
-            __instance.regionGrid[index] = reg;
-            Region_Patch.GetRegionCells(reg).Add(c);
-
-            return false;
-        }
-
+        // RimThreaded policy (unchanged from 1.4): a query never triggers a region rebuild, except on the map's generation tick (raid/quest map
+        // generation needs reachability right away). Rebuilds happen in Map.MapUpdate on the main thread. Otherwise identical to 1.6 vanilla,
+        // including the 1.6 "disposed" check. The rebuild takes the region lock itself (RegionAndRoomUpdater_Patch).
         public static bool GetValidRegionAt(RegionGrid __instance, ref Region __result, IntVec3 c)
         {
+            if (__instance.disposed)
+            {
+                __result = null;
+                return false;
+            }
             Map map = __instance.map;
             RegionAndRoomUpdater regionAndRoomUpdater = map.regionAndRoomUpdater;
             if (!c.InBounds(map))
@@ -54,27 +34,16 @@ namespace RimThreaded.RW_Patches
             }
             if (!regionAndRoomUpdater.Enabled && regionAndRoomUpdater.AnythingToRebuild)
             {
-                Log.Warning(string.Concat("Trying to get valid region at ", c, " but RegionAndRoomUpdater is disabled. The result may be incorrect."));
+                Log.Warning("Trying to get valid region at " + c + " but RegionAndRoomUpdater is disabled. The result may be incorrect.");
             }
-            Region region = __instance.regionGrid[map.cellIndices.CellToIndex(c)];
+            int index = map.cellIndices.CellToIndex(c);
+            Region region = __instance.regionGrid[index];
             if ((region == null || !region.valid) && Find.TickManager.TicksGame - map.generationTick == 0) //credit to BlackJack
             {
-                //not locking this breaks the generation of raid maps, since structure, pawn and loot generation depend on the canReachMapBorder or something in order to generate
-                //Log.Message("Intitially generating region for a map, namedly: " + map.uniqueID + " Dict :"+Regen);
-                
-                lock (map.regionAndRoomUpdater)
-                {
-                    regionAndRoomUpdater.TryRebuildDirtyRegionsAndRooms();
-                    region = __instance.regionGrid[map.cellIndices.CellToIndex(c)];
-                }
-                
+                regionAndRoomUpdater.TryRebuildDirtyRegionsAndRooms();
+                region = __instance.regionGrid[index];
             }
-            if (region != null && region.valid)
-            {
-                __result = region;
-                return false;
-            }
-            __result = null;
+            __result = region != null && region.valid ? region : null;
             return false;
         }
 

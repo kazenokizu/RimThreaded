@@ -1033,7 +1033,6 @@ namespace RimThreaded
 			//JobMaker_Patch.RunDestructivePatches(); should be fixed by the simplepool patch
 			LongEventHandler_Patch.RunDestructivePatches(); //TODO - could use field replacement for conncurrentqueue
 			Lord_Patch.RunDestructivePatches();
-			LordManager_Patch.RunDestructivePatches();			
 			LordToil_Siege_Patch.RunDestructivePatches(); //TODO does locks around clears and adds. ThreadSafeLinkedList
 			Map_Patch.RunDestructivePatches(); //TODO - discover root cause
 			MemoryThoughtHandler_Patch.RunDestructivePatches();
@@ -1042,7 +1041,6 @@ namespace RimThreaded
 			Pawn_ApparelTracker_Patch.RunDestructivePatches(); //explosions fix			
 			Pawn_HealthTracker_Patch.RunDestructivePatches(); //TODO replace with ThreadSafeLinkedList
 			Pawn_PathFollower_Patch.RunDestructivePatches(); // 1.3 null ref pawn?.jobs?.curDriver?.locomotionUrgencySameAs
-			Pawn_PlayerSettings_Patch.RunDestructivePatches();
 			Pawn_RelationsTracker_Patch.RunDestructivePatches();
 			Pawn_RotationTracker_Patch.RunDestructivePatches();
 			PawnCapacitiesHandler_Patch.RunDestructivePatches();
@@ -1064,7 +1062,6 @@ namespace RimThreaded
 			
 			RegionGrid_Patch.RunDestructivePatches();
 			RegionLink_Patch.RunDestructivePatches();
-			RegionMaker_Patch.RunDestructivePatches();
 			ResourceCounter_Patch.RunDestructivePatches();
 			//RoofGrid_Patch is causing problems to the roof notification in 1.3 a fix is also inside the Patch in case  this is needed for something else I am commenting this for now -Senior
 			RulePackDef_Patch.RunDestructivePatches(); //explosions fix - grammar

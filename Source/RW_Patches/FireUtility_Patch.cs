@@ -10,25 +10,20 @@ namespace RimThreaded.RW_Patches
         {
             Type original = typeof(FireUtility);
             Type patched = typeof(FireUtility_Patch);
-            RimThreadedHarmony.Prefix(original, patched, nameof(TryAttachFire));
+            RimThreadedHarmony.Prefix(original, patched, nameof(TryAttachFire), null, false);
             RimThreadedHarmony.Prefix(original, patched, nameof(ChanceToStartFireIn), null, false);
         }
 
-        public static bool TryAttachFire(Thing t, float fireSize)
+        // 1.6 port: the 1.4 copy of vanilla TryAttachFire lacked the new "instigator" argument (Fire.instigator). Vanilla now runs unchanged;
+        // this prefix only skips the call when the thing has no map (despawned on another thread) or a pawn has no job tracker, both of which
+        // would throw inside vanilla.
+        public static bool TryAttachFire(Thing t)
         {
-            if (!t.CanEverAttachFire() || t.HasAttachment(ThingDefOf.Fire))
+            if (t == null || t.Map == null)
                 return false;
-            Fire fire = (Fire)ThingMaker.MakeThing(ThingDefOf.Fire);
-            fire.fireSize = fireSize;
-            fire.AttachTo(t);
-            GenSpawn.Spawn(fire, t.Position, t.Map, Rot4.North);
-            if (!(t is Pawn pawn))
+            if (t is Pawn pawn && pawn.jobs == null)
                 return false;
-            Verse.AI.Pawn_JobTracker jobs = pawn.jobs;
-            if (jobs != null)
-                jobs.StopAll();
-            pawn.records.Increment(RecordDefOf.TimesOnFire);
-            return false;
+            return true;
         }
         public static bool ChanceToStartFireIn(ref float __result, IntVec3 c, Map map)
         {

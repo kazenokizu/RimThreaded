@@ -16,7 +16,9 @@ namespace RimThreaded.RW_Patches
                 (MapParent)parameters[1],
                 (MapGeneratorDef)parameters[2],
                 (IEnumerable<GenStepWithParams>)parameters[3],
-                (Action<Map>)parameters[4]);
+                (Action<Map>)parameters[4],
+                (bool)parameters[5],
+                (bool)parameters[6]);
 
 
         internal static void RunDestructivePatches()
@@ -26,13 +28,13 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Prefix(original, patched, "GenerateMap");
         }
 
-        public static bool GenerateMap(ref Map __result, IntVec3 mapSize, MapParent parent, MapGeneratorDef mapGenerator, IEnumerable<GenStepWithParams> extraGenStepDefs = null, Action<Map> extraInitBeforeContentGen = null)
+        public static bool GenerateMap(ref Map __result, IntVec3 mapSize, MapParent parent, MapGeneratorDef mapGenerator, IEnumerable<GenStepWithParams> extraGenStepDefs = null, Action<Map> extraInitBeforeContentGen = null, bool isPocketMap = false, bool stepDebugger = false)
         {
             if (!CurrentThread.IsBackground || !allWorkerThreads.TryGetValue(CurrentThread, out ThreadInfo threadInfo))
                 return true;
             threadInfo.timeoutExempt = 60000;
             threadInfo.safeFunctionRequest = new object[] { FuncGenerateMap, new object[] {
-                mapSize, parent, mapGenerator, extraGenStepDefs, extraInitBeforeContentGen } };
+                mapSize, parent, mapGenerator, extraGenStepDefs, extraInitBeforeContentGen, isPocketMap, stepDebugger } };
             mainThreadWaitHandle.Set();
             threadInfo.eventWaitStart.WaitOne();
             threadInfo.timeoutExempt = 0;
