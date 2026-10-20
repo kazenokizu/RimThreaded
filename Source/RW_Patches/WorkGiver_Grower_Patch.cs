@@ -13,95 +13,6 @@ namespace RimThreaded.RW_Patches
 
         public static Dictionary<Map, List<HashSet<IntVec3>[]>> awaitingPlantCellsMapDict = new Dictionary<Map, List<HashSet<IntVec3>[]>>();
 
-        public static bool PotentialWorkCellsGlobal(WorkGiver_Grower __instance, ref IEnumerable<IntVec3> __result, Pawn pawn)
-        {
-            __result = PotentialWorkCellsGlobalIE(__instance, pawn);
-            return false;
-        }
-        private static IEnumerable<IntVec3> PotentialWorkCellsGlobalIE(WorkGiver_Grower __instance, Pawn pawn)
-        {
-            Danger maxDanger = pawn.NormalMaxDanger();
-            List<Building> bList = pawn.Map.listerBuildings.allBuildingsColonist;
-            for (int j = 0; j < bList.Count; j++)
-            {
-                Building_PlantGrower building_PlantGrower = bList[j] as Building_PlantGrower;
-                if (building_PlantGrower == null || !__instance.ExtraRequirements(building_PlantGrower, pawn) || building_PlantGrower.IsForbidden(pawn) ||
-                    //!pawn.CanReach(building_PlantGrower, PathEndMode.OnCell, maxDanger) || 
-                    building_PlantGrower.IsBurning())
-                {
-                    continue;
-                }
-                foreach (IntVec3 item in building_PlantGrower.OccupiedRect())
-                {
-                    yield return item;
-                }
-                wantedPlantDef = null;
-            }
-            wantedPlantDef = null;
-            List<Zone> zonesList = pawn.Map.zoneManager.AllZones;
-            for (int j = 0; j < zonesList.Count; j++)
-            {
-                Zone_Growing growZone = zonesList[j] as Zone_Growing;
-                if (growZone == null)
-                {
-                    continue;
-                }
-                if (growZone.cells.Count == 0)
-                {
-                    Log.ErrorOnce("Grow zone has 0 cells: " + growZone, -563487);
-                }
-                else if (__instance.ExtraRequirements(growZone, pawn) && !growZone.ContainsStaticFire &&
-                         pawn.CanReach(growZone.Cells.First(), PathEndMode.OnCell, maxDanger))
-                {
-                    for (int k = 0; k < growZone.cells.Count; k++)
-                    {
-                        yield return growZone.cells[k];
-                    }
-                    wantedPlantDef = null;
-                    growZone = null;
-                }
-            }
-            wantedPlantDef = null;
-        }
-        public static IEnumerable<IntVec3> PotentialWorkCellsGlobalWithoutCanReach(WorkGiver_Grower __instance, Pawn pawn)
-        {
-            Danger maxDanger = pawn.NormalMaxDanger();
-            List<Building> bList = pawn.Map.listerBuildings.allBuildingsColonist;
-            for (int j = 0; j < bList.Count; j++)
-            {
-                Building_PlantGrower building_PlantGrower = bList[j] as Building_PlantGrower;
-                if (building_PlantGrower == null || !__instance.ExtraRequirements(building_PlantGrower, pawn) || building_PlantGrower.IsForbidden(pawn) || building_PlantGrower.IsBurning())
-                {
-                    continue;
-                }
-                foreach (IntVec3 item in building_PlantGrower.OccupiedRect())
-                {
-                    yield return item;
-                }
-            }
-            List<Zone> zonesList = pawn.Map.zoneManager.AllZones;
-            for (int j = 0; j < zonesList.Count; j++)
-            {
-                Zone_Growing growZone = zonesList[j] as Zone_Growing;
-                if (growZone == null)
-                {
-                    continue;
-                }
-                if (growZone.cells.Count == 0)
-                {
-                    Log.ErrorOnce("Grow zone has 0 cells: " + growZone, -563487);
-                }
-                else if (__instance.ExtraRequirements(growZone, pawn) && !growZone.ContainsStaticFire)
-                {
-                    for (int k = 0; k < growZone.cells.Count; k++)
-                    {
-                        yield return growZone.cells[k];
-                    }
-                }
-            }
-        }
-
-
         internal static IntVec3 ClosestLocationReachable(WorkGiver_Grower workGiver_Grower, Pawn pawn)
         {
             Danger maxDanger = pawn.NormalMaxDanger();
@@ -167,139 +78,119 @@ namespace RimThreaded.RW_Patches
             //wantedPlantDef = null;
             return IntVec3.Invalid;
         }
+        // Boolean twin of 1.6 WorkGiver_GrowerSow.JobOnCell: true when vanilla would produce a job. Same checks, same order.
+        // Cells that cannot be worked right now are re-registered in the JumboCell cache as in the 1.4 version.
         private static bool JobOnCellTest(WorkGiverDef def, Pawn pawn, IntVec3 c, bool forced = false)
         {
             Map map = pawn.Map;
             if (c.IsForbidden(pawn))
             {
-#if DEBUG
-                Log.Warning("IsForbidden");
-#endif
                 JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
                 return false;
             }
-
-            if (!PlantUtility.GrowthSeasonNow(c, map, forSowing: true))
+            if (c.GetVacuum(map) >= 0.5f)
             {
-#if DEBUG
-                Log.Warning("GrowthSeasonNow");
-#endif
                 return false;
             }
-
             ThingDef localWantedPlantDef = WorkGiver_Grower.CalculateWantedPlantDef(c, map);
-            WorkGiver_Grower.wantedPlantDef = localWantedPlantDef;
+            wantedPlantDef = localWantedPlantDef;
             if (localWantedPlantDef == null)
             {
-#if DEBUG
-                Log.Warning("localWantedPlantDef==null");
-#endif
                 return false;
             }
-            Plant plant = null;
+            if (!PlantUtility.GrowthSeasonNow(c, map, localWantedPlantDef))
+            {
+                return false;
+            }
             List<Thing> thingList = c.GetThingList(map);
+            Zone_Growing zone_Growing = c.GetZone(map) as Zone_Growing;
             bool flag = false;
             for (int i = 0; i < thingList.Count; i++)
             {
                 Thing thing = thingList[i];
-                if (thing.def.category == ThingCategory.Plant)
+                if (thing.def == localWantedPlantDef)
                 {
-                    plant = (Plant)thing;
-                    if (thing.def == localWantedPlantDef)
-                    {
-#if DEBUG
-                        Log.Warning("thing.def == localWantedPlantDef... (plant thing needs to be removed before sowing) workgiverGrowerSowingHashset at: " + c.ToString());
-#endif
-                        JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
-                        //JumboCellCache.AddObjectToActionableObjects(map, c, c, awaitingPlantCellsMapDict);
-                        return false;
-                    }
+                    JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
+                    return false;
                 }
-
-
                 if ((thing is Blueprint || thing is Frame) && thing.Faction == pawn.Faction)
                 {
                     flag = true;
                 }
             }
-
             if (flag)
             {
                 Thing edifice = c.GetEdifice(map);
                 if (edifice == null || edifice.def.fertility < 0f)
                 {
-#if DEBUG
-                    Log.Warning("fertility");
-#endif
                     return false;
                 }
             }
-
-            if (localWantedPlantDef.plant.cavePlant)
+            if (localWantedPlantDef.plant.diesToLight)
             {
-                if (!c.Roofed(map))
+                if (!c.Roofed(map) && !map.GameConditionManager.IsAlwaysDarkOutside)
                 {
-#if DEBUG
-                    Log.Warning("cavePlant");
-#endif
                     return false;
                 }
-
-                if (map.glowGrid.GameGlowAt(c, ignoreCavePlants: true) > 0f)
+                if (map.glowGrid.GroundGlowAt(c, ignoreCavePlants: true) > 0f)
                 {
-#if DEBUG
-                    Log.Warning("GameGlowAt");
-#endif
                     return false;
                 }
             }
-
-            if (localWantedPlantDef.plant.interferesWithRoof && c.Roofed(pawn.Map))
+            if (localWantedPlantDef.plant.interferesWithRoof && c.Roofed(map))
             {
                 return false;
             }
-
-            //Plant plant = c.GetPlant(map);
+            Plant plant = c.GetPlant(map);
             if (plant != null && plant.def.plant.blockAdjacentSow)
             {
                 if (!pawn.CanReserve(plant, 1, -1, null, forced) || plant.IsForbidden(pawn))
                 {
-#if DEBUG
-                    Log.Warning("blockAdjacentSow");
-#endif
                     return false;
                 }
-
-                return true; // JobMaker.MakeJob(JobDefOf.CutPlant, plant);
+                if (zone_Growing != null && !zone_Growing.allowCut)
+                {
+                    return false;
+                }
+                if (!forced && plant.TryGetComp<CompPlantPreventCutting>(out CompPlantPreventCutting comp) && comp.PreventCutting)
+                {
+                    return false;
+                }
+                return PlantUtility.PawnWillingToCutPlant_Job(plant, pawn);
             }
-
             Thing thing2 = PlantUtility.AdjacentSowBlocker(localWantedPlantDef, c, map);
             if (thing2 != null)
             {
-                Plant plant2 = thing2 as Plant;
-                if (plant2 != null && pawn.CanReserve(plant2, 1, -1, null, forced) && !plant2.IsForbidden(pawn))
+                if (thing2 is Plant plant2 && pawn.CanReserveAndReach(plant2, PathEndMode.Touch, Danger.Deadly, 1, -1, null, forced) && !plant2.IsForbidden(pawn))
                 {
                     IPlantToGrowSettable plantToGrowSettable = plant2.Position.GetPlantToGrowSettable(plant2.Map);
                     if (plantToGrowSettable == null || plantToGrowSettable.GetPlantDefToGrow() != plant2.def)
                     {
-                        return true; // JobMaker.MakeJob(JobDefOf.CutPlant, plant2);
+                        Zone_Growing zone_Growing2 = c.GetZone(map) as Zone_Growing;
+                        Zone_Growing zone_Growing3 = plant2.Position.GetZone(map) as Zone_Growing;
+                        if ((zone_Growing2 != null && !zone_Growing2.allowCut) || (zone_Growing3 != null && !zone_Growing3.allowCut && plant2.def == zone_Growing3.GetPlantDefToGrow()))
+                        {
+                            return false;
+                        }
+                        if (!forced && thing2.TryGetComp(out CompPlantPreventCutting comp2) && comp2.PreventCutting)
+                        {
+                            return false;
+                        }
+                        if (PlantUtility.TreeMarkedForExtraction(plant2))
+                        {
+                            return false;
+                        }
+                        return PlantUtility.PawnWillingToCutPlant_Job(plant2, pawn);
                     }
                 }
-#if DEBUG
-                Log.Warning("AdjacentSowBlocker");
-#endif
                 JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
                 return false;
             }
-
-            if (localWantedPlantDef.plant.sowMinSkill > 0 && pawn.skills != null && pawn.skills.GetSkill(SkillDefOf.Plants).Level < localWantedPlantDef.plant.sowMinSkill)
+            int sowMinSkill = localWantedPlantDef.plant.sowMinSkill;
+            if (sowMinSkill > 0 && ((pawn.skills != null && pawn.skills.GetSkill(SkillDefOf.Plants).Level < sowMinSkill) || (pawn.IsColonyMech && pawn.RaceProps.mechFixedSkillLevel < sowMinSkill)))
             {
-#if DEBUG
-                Log.Warning("UnderAllowedSkill");
-#endif
                 return false;
             }
-
             for (int j = 0; j < thingList.Count; j++)
             {
                 Thing thing3 = thingList[j];
@@ -307,72 +198,50 @@ namespace RimThreaded.RW_Patches
                 {
                     continue;
                 }
-
                 if (!pawn.CanReserve(thing3, 1, -1, null, forced))
                 {
-#if DEBUG
-                    Log.Warning("!CanReserve");
-#endif
                     JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
-
                     return false;
                 }
-
                 if (thing3.def.category == ThingCategory.Plant)
                 {
-                    if (!thing3.IsForbidden(pawn))
+                    if (thing3.IsForbidden(pawn))
                     {
-                        return true; // JobMaker.MakeJob(JobDefOf.CutPlant, thing3);
+                        JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
+                        return false;
                     }
-#if DEBUG
-                    Log.Warning("Plant IsForbidden");
-#endif
-                    JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
-
-                    return false;
+                    if (zone_Growing != null && !zone_Growing.allowCut)
+                    {
+                        return false;
+                    }
+                    if (!forced && plant.TryGetComp<CompPlantPreventCutting>(out CompPlantPreventCutting comp3) && comp3.PreventCutting)
+                    {
+                        return false;
+                    }
+                    if (!PlantUtility.PawnWillingToCutPlant_Job(thing3, pawn))
+                    {
+                        return false;
+                    }
+                    return !PlantUtility.TreeMarkedForExtraction(thing3);
                 }
-
                 if (thing3.def.EverHaulable)
                 {
-                    return true; //HaulAIUtility.HaulAsideJobFor(pawn, thing3);
+                    return true; // vanilla: HaulAIUtility.HaulAsideJobFor(pawn, thing3), which can still return null
                 }
-#if DEBUG
-                Log.Warning("EverHaulable");
-#endif
                 JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
                 return false;
             }
-
-            if (!localWantedPlantDef.CanEverPlantAt(c, map))
+            if (!localWantedPlantDef.CanNowPlantAt(c, map) || !PlantUtility.GrowthSeasonNow(c, map, localWantedPlantDef))
             {
-#if DEBUG
-                Log.Warning("CanEverPlantAt_NewTemp");
-#endif
                 JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
                 return false;
             }
-
-            if (!PlantUtility.GrowthSeasonNow(c, map, forSowing: true))
-            {
-#if DEBUG
-                Log.Warning("GrowthSeasonNow");
-#endif
-                return false;
-            }
-
             if (!pawn.CanReserve(c, 1, -1, null, forced))
             {
-#if DEBUG
-                Log.Warning("!pawn.CanReserve(c)");
-#endif
                 JumboCell.ReregisterObject(map, c, RimThreaded.plantSowing_Cache);
-                //JumboCellCache.AddObjectToActionableObjects(map, c, c, awaitingPlantCellsMapDict);
                 return false;
             }
-
-            //Job job = JobMaker.MakeJob(JobDefOf.Sow, c);
-            //job.plantDefToSow = wantedPlantDef;
-            return true; //job;
+            return true;
         }
     }
 }

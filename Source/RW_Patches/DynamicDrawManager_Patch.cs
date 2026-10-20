@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Verse;
 
@@ -32,11 +32,11 @@ namespace RimThreaded.RW_Patches
             if (t.def.drawerType == DrawerType.None) return false;
             if (__instance.drawingNow)
                 Log.Warning("Cannot deregister drawable " + t + " while drawing is in progress. Things shouldn't be despawned in Draw methods.");
+            // 1.6: drawThings is a readonly List<Thing> (was a HashSet that was copied on write).
+            // Drawing only happens on the main thread outside of the tick phase, so locking add/remove is enough.
             lock (__instance)
             {
-                HashSet<Thing> newDrawThings = new HashSet<Thing>(__instance.drawThings);
-                newDrawThings.Remove(t);
-                __instance.drawThings = newDrawThings;
+                __instance.drawThings.Remove(t);
             }
             return false;
         }

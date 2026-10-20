@@ -21,7 +21,7 @@ namespace RimThreaded.RW_Patches
                 __result = true;
                 return false;
             }
-            __result = __instance.ageSecs >= def.Lifespan;
+            __result = __instance.ageSecs >= __instance.Lifespan;
             return false;
         }
         public static bool Draw(FleckStatic __instance, DrawBatch batch)

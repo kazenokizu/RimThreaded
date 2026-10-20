@@ -65,7 +65,7 @@ namespace RimThreaded.RW_Patches
                 catch (Exception arg) { Log.Error("Exception while rebuilding dirty regions: " + arg); }
                 while (cellsToReset.TryDequeue(out IntVec3 dirtyCell))
                 {
-                    __instance.map.temperatureCache.ResetCachedCellInfo(dirtyCell);
+                    __instance.map.TemperatureVacuumCache.ResetCachedCellInfo(dirtyCell);
                 }
                 __instance.initialized = true;
                 working = false;

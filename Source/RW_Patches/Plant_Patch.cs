@@ -34,7 +34,7 @@ namespace RimThreaded.RW_Patches
             foreach (CodeInstruction instruction in instructions)
             {
                 if (instruction.opcode == OpCodes.Callvirt &&
-                    (MethodInfo)instruction.operand == Method(typeof(MapDrawer), "MapMeshDirty", new Type[] { typeof(IntVec3), typeof(MapMeshFlag) }))
+                    (MethodInfo)instruction.operand == Method(typeof(MapDrawer), "MapMeshDirty", new Type[] { typeof(IntVec3), typeof(ulong) }))
                 {
                     yield return instruction;
                     CodeInstruction ci1 = new CodeInstruction(OpCodes.Ldarg_0);

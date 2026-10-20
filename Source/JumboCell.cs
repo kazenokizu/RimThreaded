@@ -1,4 +1,4 @@
-﻿using RimWorld;
+using RimWorld;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -288,8 +288,6 @@ namespace RimThreaded
 			if (map == null || map.info == null)
 				return;
 			IntVec3 size = map.Size;
-			if (size == null)
-				return;
 			int jumboCellWidth;
 			int mapSizeX = size.x;
 			int mapSizeZ = size.z;

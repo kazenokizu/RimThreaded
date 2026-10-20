@@ -214,7 +214,6 @@ namespace RimThreaded
             RegionAndRoomUpdater_Patch.InitializeThreadStatics();
             RegionDirtyer_Patch.InitializeThreadStatics();
             RegionTraverser_Patch.InitializeThreadStatics();
-            SituationalThoughtHandler_Patch.InitializeThreadStatics();
             SustainerManager_Patch.InitializeThreadStatics();
             Toils_Ingest_Patch.InitializeThreadStatics();
             World_Patch.InitializeThreadStatics();

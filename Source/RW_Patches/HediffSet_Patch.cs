@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using RimWorld;
@@ -214,9 +214,18 @@ namespace RimThreaded.RW_Patches
                 __instance.pawn.apparel.Notify_LostBodyPart();
             }
 
-            if (hediff.def.causesNeed != null && !__instance.pawn.Dead)
+            HediffStage curStage = hediff.CurStage;
+            if (hediff.def.chemicalNeed != null && !__instance.pawn.Dead)
             {
-                __instance.pawn.needs.AddOrRemoveNeedsAsAppropriate();
+                __instance.pawn.needs?.AddOrRemoveNeedsAsAppropriate();
+            }
+            else if (curStage != null && (!curStage.enablesNeeds.NullOrEmpty() || !curStage.disablesNeeds.NullOrEmpty()) && !__instance.pawn.Dead)
+            {
+                __instance.pawn.needs?.AddOrRemoveNeedsAsAppropriate();
+            }
+            if (hediff.def.HasDefinedGraphicProperties || hediff.def.forceRenderTreeRecache)
+            {
+                __instance.pawn.Drawer.renderer.SetAllGraphicsDirty();
             }
             return false;
         }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using RimWorld;
@@ -45,11 +45,17 @@ namespace RimThreaded.RW_Patches
                     {
                         if (allDef.plant.wildBiomes[j].biome == __instance)
                         {
-                            localCachedPlantCommonalities.Add(allDef, allDef.plant.wildBiomes[j].commonality);
+                            if (localCachedPlantCommonalities.TryGetValue(allDef, out float existing))
+                            {
+                                localCachedPlantCommonalities[allDef] = (existing + allDef.plant.wildBiomes[j].commonality) / 2f;
+                            }
+                            else
+                            {
+                                localCachedPlantCommonalities.Add(allDef, allDef.plant.wildBiomes[j].commonality);
+                            }
                         }
                     }
                 }
-                __instance.cachedPlantCommonalitiesSum = localCachedPlantCommonalities.Sum(x => x.Value);
                 __instance.cachedPlantCommonalities = localCachedPlantCommonalities;
 
             }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Verse;
 
@@ -45,8 +45,6 @@ namespace RimThreaded.RW_Patches
         public static bool Fogged(ref bool __result, IntVec3 c, Map map)
         {
             __result = false;
-            if (c == null)
-                return false;
             if (map == null)
                 return false;
             FogGrid fogGrid = map.fogGrid;

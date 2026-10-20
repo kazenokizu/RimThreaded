@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using RimWorld;
 using Verse;
 
@@ -15,7 +15,7 @@ namespace RimThreaded.RW_Patches
         }
         public static bool RecordPopulationIncrease(StoryState __instance)
         {
-            int count = PawnsFinder.AllMapsCaravansAndTravelingTransportPods_Alive_FreeColonists.Count;
+            int count = PawnsFinder.AllMapsCaravansAndTravellingTransporters_Alive_FreeColonists.Count;
             lock (__instance.colonistCountTicks)
             {
                 if (!__instance.colonistCountTicks.ContainsKey(count))

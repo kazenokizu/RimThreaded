@@ -143,74 +143,68 @@ namespace RimThreaded.RW_Patches
             __result = __instance.districtInt;
             return false;
         }
+        private static readonly Dictionary<Pawn, FloatRange> safeTempRanges = new Dictionary<Pawn, FloatRange>();
+        private static int safeTempRangesForTick = -1;
+
+        // 1.6: cachedDangers / cachedSafeTemperatureRanges are readonly, so they are cleared and filled in place under locks.
         public static bool DangerFor(Region __instance, ref Danger __result, Pawn p)
         {
-            if (Current.ProgramState == ProgramState.Playing)
+            bool playing = Current.ProgramState == ProgramState.Playing;
+            int tick = GenTicks.TicksGame;
+            if (playing)
             {
-                if (__instance.cachedDangersForFrame != Time_Patch.get_frameCount())
+                lock (__instance)
                 {
-                    lock (__instance)
+                    if (__instance.cachedDangersForTick != tick)
                     {
-                        __instance.cachedDangers = new List<KeyValuePair<Pawn, Danger>>();
+                        __instance.cachedDangers.Clear();
+                        __instance.cachedDangersForTick = tick;
                     }
-                    __instance.cachedDangersForFrame = Time_Patch.get_frameCount();
-                }
-                else
-                {
-                    List<KeyValuePair<Pawn, Danger>> localCachedDangers = __instance.cachedDangers;
-                    for (int index = 0; index < localCachedDangers.Count; ++index)
+                    else if (__instance.cachedDangers.TryGetValue(p, out Danger cached))
                     {
-                        if (localCachedDangers[index].Key == p)
-                        {
-                            __result = localCachedDangers[index].Value;
-                            return false;
-                        }
+                        __result = cached;
+                        return false;
                     }
                 }
             }
-            Danger danger = Danger.Unspecified;
             Room room = __instance.Room;
-            District district = null;
-            if (room != null)
+            if (room == null || __instance.District == null)
             {
-                district = __instance.District;
+                __result = Danger.Unspecified;
+                return false;
             }
-            if (room != null && district != null)
+            float temperature = room.Temperature;
+            FloatRange range;
+            if (playing)
             {
-                float temperature = room.Temperature;
-                FloatRange floatRange;
-                if (Current.ProgramState == ProgramState.Playing)
+                lock (cachedSafeTemperatureRange)
                 {
-                    if (Region.cachedSafeTemperatureRangesForFrame != Time_Patch.get_frameCount())
+                    if (safeTempRangesForTick != tick)
                     {
-                        lock (cachedSafeTemperatureRange)
-                        {
-                            Region.cachedSafeTemperatureRanges = new Dictionary<Pawn, FloatRange>();
-                        }
-                        Region.cachedSafeTemperatureRangesForFrame = Time_Patch.get_frameCount();
+                        safeTempRanges.Clear();
+                        safeTempRangesForTick = tick;
                     }
-                    if (!Region.cachedSafeTemperatureRanges.TryGetValue(p, out floatRange))
+                    if (!safeTempRanges.TryGetValue(p, out range))
                     {
-                        lock (cachedSafeTemperatureRange)
-                        {
-                            if (!Region.cachedSafeTemperatureRanges.TryGetValue(p, out FloatRange floatRange2))
-                            {
-                                floatRange2 = p.SafeTemperatureRange();
-                                Region.cachedSafeTemperatureRanges.Add(p, floatRange2);
-                            }
-                            floatRange = floatRange2;
-                        }
+                        range = p.SafeTemperatureRange();
+                        safeTempRanges[p] = range;
                     }
                 }
-                else
-                    floatRange = p.SafeTemperatureRange();
-                danger = !floatRange.Includes(temperature) ? !floatRange.ExpandedBy(80f).Includes(temperature) ? Danger.Deadly : Danger.Some : Danger.None;
-                if (Current.ProgramState == ProgramState.Playing)
+            }
+            else
+            {
+                range = p.SafeTemperatureRange();
+            }
+            Danger danger = range.Includes(temperature) ? Danger.None : (range.ExpandedBy(80f).Includes(temperature) ? Danger.Some : Danger.Deadly);
+            if (room.Vacuum > 0.5f && p.ConcernedByVacuum)
+            {
+                danger = Danger.Deadly;
+            }
+            if (playing)
+            {
+                lock (__instance)
                 {
-                    lock (__instance.cachedDangers)
-                    {
-                        __instance.cachedDangers.Add(new KeyValuePair<Pawn, Danger>(p, danger));
-                    }
+                    __instance.cachedDangers[p] = danger;
                 }
             }
             __result = danger;

@@ -270,7 +270,7 @@ namespace RimThreaded.RW_Patches
                     }
                     else
                     */
-                    thing.Tick();
+                    thing.DoTick();
                 }
                 catch (Exception ex)
                 {
@@ -311,7 +311,7 @@ namespace RimThreaded.RW_Patches
                 if (thing.Destroyed) continue;
                 try
                 {
-                    thing.TickRare();
+                    thing.DoTick();
                 }
                 catch (Exception ex)
                 {
@@ -352,7 +352,7 @@ namespace RimThreaded.RW_Patches
                 if (thing.Destroyed) continue;
                 try
                 {
-                    thing.TickLong();
+                    thing.DoTick();
                 }
                 catch (Exception ex)
                 {

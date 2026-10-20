@@ -5,7 +5,7 @@
 	<author>Major Hoff</author>
 	<packageId>majorhoff.rimthreaded</packageId>
 	<supportedVersions>
-		<li>1.4</li>
+		<li>1.6</li>
 	</supportedVersions>
   <description>
     RimThreaded enables RimWorld to utilize multiple threads and thus greatly increases the speed of the game.

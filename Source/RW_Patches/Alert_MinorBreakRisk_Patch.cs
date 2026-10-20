@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using RimWorld;
 using Verse;
+using Verse.AI;
 
 namespace RimThreaded.RW_Patches
 {
@@ -15,18 +16,20 @@ namespace RimThreaded.RW_Patches
         }
         public static bool GetReport(Alert_MinorBreakRisk __instance, ref AlertReport __result)
         {
+            // 1.6 logic (BreakRiskAlertUtility), computed with local lists instead of shared static lists
             List<Pawn> pawnsAtRiskMinorResult = new List<Pawn>();
-            List<Pawn> pawnList = PawnsFinder.AllMapsCaravansAndTravelingTransportPods_Alive_FreeColonists_NoCryptosleep;
+            List<Pawn> pawnList = PawnsFinder.AllMapsCaravansAndTravellingTransporters_AliveSpawned_FreeColonists_NoSuspended;
             for (int i = 0; i < pawnList.Count; i++)
             {
                 Pawn item = pawnList[i];
-                if (item.Downed || item.MentalStateDef != null) continue;
-                float curMood = item.mindState.mentalBreaker.CurMood;
-                if (curMood < item.mindState.mentalBreaker.BreakThresholdMajor)
+                if (item.Downed) continue;
+                MentalBreaker breaker = item.mindState.mentalBreaker;
+                if (breaker.BreakExtremeIsImminent || breaker.BreakMajorIsImminent)
                 {
+                    __result = false;
                     return false;
                 }
-                if (curMood < item.mindState.mentalBreaker.BreakThresholdMinor)
+                if (breaker.BreakMinorIsImminent)
                 {
                     pawnsAtRiskMinorResult.Add(item);
                 }

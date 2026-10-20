@@ -35,7 +35,7 @@ namespace RimThreaded.RW_Patches
                 ConcurrentQueue<IntVec3> dirtyCells = get_DirtyCells(__instance);
                 foreach (IntVec3 dirtyCell in dirtyCells)
                 {
-                    __instance.map.temperatureCache.ResetCachedCellInfo(dirtyCell);
+                    __instance.map.TemperatureVacuumCache.ResetCachedCellInfo(dirtyCell);
                 }
                 dirtyCellsDict.SetOrAdd(__instance, new ConcurrentQueue<IntVec3>());
             }
@@ -70,7 +70,7 @@ namespace RimThreaded.RW_Patches
                     Region regionAt_NoRebuild_InvalidAllowed = __instance.map.regionGrid.GetRegionAt_NoRebuild_InvalidAllowed(c2);
                     if (regionAt_NoRebuild_InvalidAllowed != null && regionAt_NoRebuild_InvalidAllowed.valid)
                     {
-                        __instance.map.temperatureCache.TryCacheRegionTempInfo(c, regionAt_NoRebuild_InvalidAllowed);
+                        __instance.map.TemperatureVacuumCache.TryCacheRegionTempInfo(c, regionAt_NoRebuild_InvalidAllowed);
                         regionsToDirty.Add(regionAt_NoRebuild_InvalidAllowed);
                     }
                 }
@@ -109,7 +109,7 @@ namespace RimThreaded.RW_Patches
                 Region validRegionAt_NoRebuild = b.Map.regionGrid.GetValidRegionAt_NoRebuild(item);
                 if (validRegionAt_NoRebuild != null)
                 {
-                    b.Map.temperatureCache.TryCacheRegionTempInfo(item, validRegionAt_NoRebuild);
+                    b.Map.TemperatureVacuumCache.TryCacheRegionTempInfo(item, validRegionAt_NoRebuild);
                     regionsToDirty.Add(validRegionAt_NoRebuild);
                 }
             }
@@ -128,7 +128,7 @@ namespace RimThreaded.RW_Patches
             Region validRegionAt_NoRebuild = __instance.map.regionGrid.GetValidRegionAt_NoRebuild(b.Position);
             if (validRegionAt_NoRebuild != null)
             {
-                __instance.map.temperatureCache.TryCacheRegionTempInfo(b.Position, validRegionAt_NoRebuild);
+                __instance.map.TemperatureVacuumCache.TryCacheRegionTempInfo(b.Position, validRegionAt_NoRebuild);
                 regionsToDirty.Add(validRegionAt_NoRebuild);
             }
 
@@ -139,7 +139,7 @@ namespace RimThreaded.RW_Patches
                     Region validRegionAt_NoRebuild2 = __instance.map.regionGrid.GetValidRegionAt_NoRebuild(item2);
                     if (validRegionAt_NoRebuild2 != null)
                     {
-                        __instance.map.temperatureCache.TryCacheRegionTempInfo(item2, validRegionAt_NoRebuild2);
+                        __instance.map.TemperatureVacuumCache.TryCacheRegionTempInfo(item2, validRegionAt_NoRebuild2);
                         regionsToDirty.Add(validRegionAt_NoRebuild2);
                     }
                 }

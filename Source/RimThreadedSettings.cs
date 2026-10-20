@@ -71,7 +71,7 @@ namespace RimThreaded
             Widgets.TextFieldNumeric(listing_Standard.GetRect(30f), ref timeSpeedUltrafast, ref timeSpeedUltrafastBuffer);
             Widgets.CheckboxLabeled(listing_Standard.GetRect(27f), "Disable alert updates at 4x speed:", ref disablesomealerts);
             Widgets.CheckboxLabeled(listing_Standard.GetRect(27f), "Disable forced slowdowns on events like combat:", ref disableforcedslowdowns);
-            Widgets.TextAreaScrollable(listing_Standard.GetRect(300f), modsText, ref scrollPos);
+            Widgets.LabelScrollable(listing_Standard.GetRect(300f), modsText, ref scrollPos);
             listing_Standard.End();
             Widgets.EndScrollView();
         }

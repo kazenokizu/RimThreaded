@@ -12,10 +12,10 @@ namespace RimThreaded.RW_Patches
         {
             Type original = typeof(ImmunityHandler);
             Type patched = typeof(ImmunityHandler_Patch);
-            RimThreadedHarmony.Prefix(original, patched, "ImmunityHandlerTick");
+            RimThreadedHarmony.Prefix(original, patched, "ImmunityHandlerTickInterval");
         }
 
-        public static bool ImmunityHandlerTick(ImmunityHandler __instance)
+        public static bool ImmunityHandlerTickInterval(ImmunityHandler __instance, int delta)
         {
             List<ImmunityInfo> list = __instance.NeededImmunitiesNow();
             for (int i = 0; i < list.Count; i++)
@@ -29,7 +29,7 @@ namespace RimThreaded.RW_Patches
                 {
                     ImmunityRecord immunityRecord = newImmunityList[j];
                     Hediff firstHediffOfDef = __instance.pawn.health.hediffSet.GetFirstHediffOfDef(immunityRecord.hediffDef);
-                    immunityRecord.ImmunityTick(__instance.pawn, firstHediffOfDef != null, firstHediffOfDef);
+                    immunityRecord.ImmunityTickInterval(__instance.pawn, firstHediffOfDef != null, firstHediffOfDef, delta);
                 }
                 for (int num = newImmunityList.Count - 1; num >= 0; num--)
                 {

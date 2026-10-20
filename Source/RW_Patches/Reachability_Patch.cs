@@ -165,7 +165,7 @@ namespace RimThreaded.RW_Patches
                     return false;
                 }
 
-                if (startingRegions.Any() && destRegions.Any() && __instance.CanUseCache(traverseParams.mode))
+                if (startingRegions.Any() && destRegions.Any() && Reachability.CanUseCache(traverseParams.mode))
                 {
                     switch (GetCachedResult(__instance, traverseParams, startingRegions, destRegions))
                     {

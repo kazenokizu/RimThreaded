@@ -1,16 +1,26 @@
-﻿using System;
-using RimWorld;
-using Verse;
-using UnityEngine;
+using System;
 using System.Threading;
+using RimWorld;
+using UnityEngine;
+using Verse;
 
 namespace RimThreaded.RW_Patches
 {
-
+    // Multithreaded WildPlantSpawner tick. The main thread (Map.MapPostTick -> WildPlantSpawnerTick) only queues
+    // one batch per map; worker threads then process the batch cell by cell (WildPlantSpawnerListTick).
+    //
+    // 1.6 port + fixes relative to the 1.4 version:
+    //  * cell range, wrap-around and tmp/calculated hand-over now mirror vanilla 1.6 WildPlantSpawnerTickInternal exactly
+    //  * fertility comes from map.fertilityGrid, the chance from OverrideDensityForFertilityCurve / CachedChanceFromDensity,
+    //    the regrow time from map.BiomeAt(cell), as in 1.6
+    //  * the 1.4 code accumulated into a *copy* of the work struct and cast each 0..1 cell value to int before scaling,
+    //    so the whole-map desired plant count was wrong; sums are now fixed-point longs accumulated in the shared array element
+    //  * the batch is finalized by the worker that completes the last ticket of that map, not the one that took it
     public class WildPlantSpawner_Patch
     {
         static readonly Type original = typeof(WildPlantSpawner);
         static readonly Type patched = typeof(WildPlantSpawner_Patch);
+        private const double FixedPoint = 1000000.0;
 
         internal static void RunDestructivePatches()
         {
@@ -19,58 +29,90 @@ namespace RimThreaded.RW_Patches
 
         public static bool WildPlantSpawnerTickInternal(WildPlantSpawner __instance)
         {
-            int area = __instance.map.Area;
+            if (DebugSettings.fastEcology || DebugSettings.fastEcologyRegrowRateOnly)
+            {
+                return true; // vanilla loops 2000 times; keep it single threaded
+            }
+            Map map = __instance.map;
+            int area = map.Area;
             int num = Mathf.CeilToInt(area * 0.0001f);
-            float currentPlantDensity = __instance.CurrentPlantDensity;
+            float densityFactor = __instance.CurrentPlantDensityFactor;
+            // vanilla CacheWholeMapNumDesiredPlants
             if (!__instance.hasWholeMapNumDesiredPlantsCalculated)
             {
                 __instance.calculatedWholeMapNumDesiredPlants = __instance.CurrentWholeMapNumDesiredPlants;
                 __instance.calculatedWholeMapNumNonZeroFertilityCells = __instance.CurrentWholeMapNumNonZeroFertilityCells;
                 __instance.hasWholeMapNumDesiredPlantsCalculated = true;
             }
-            //int num2 = Mathf.CeilToInt(10000f);
-            float chance = __instance.calculatedWholeMapNumDesiredPlants / __instance.calculatedWholeMapNumNonZeroFertilityCells;
-            __instance.map.cellsInRandomOrder.Get(0); //This helps call "Create List If Should"
-            int index = Interlocked.Increment(ref wildPlantSpawnerCount) - 1;
-            int newNum = Interlocked.Add(ref wildPlantSpawnerTicksCount, num);
-            wildPlantSpawners[index].ticks = newNum;
-            wildPlantSpawners[index].cycleIndexOffset = num + __instance.cycleIndex;
-            wildPlantSpawners[index].area = area;
-            wildPlantSpawners[index].randomCells = __instance.map.cellsInRandomOrder;
-            wildPlantSpawners[index].map = __instance.map;
-            wildPlantSpawners[index].plantDensity = currentPlantDensity;
-            wildPlantSpawners[index].desiredPlants = __instance.calculatedWholeMapNumDesiredPlants;
-            wildPlantSpawners[index].desiredPlantsTmp1000 = 1000 * (int)__instance.calculatedWholeMapNumDesiredPlantsTmp;
-            wildPlantSpawners[index].fertilityCellsTmp = __instance.calculatedWholeMapNumNonZeroFertilityCellsTmp;
-            wildPlantSpawners[index].desiredPlants2Tmp1000 = 0;
-            wildPlantSpawners[index].fertilityCells2Tmp = 0;
-            wildPlantSpawners[index].wildPlantSpawnerInstance = __instance;
-            wildPlantSpawners[index].chance = chance;
-            __instance.cycleIndex = (__instance.cycleIndex + num) % area;
+            // warm every lazily built cache here on the main thread so workers only read them
+            _ = __instance.HaveAnyPlantsWhichIgnoreFertility;
+            SimpleCurve fertilityCurve = __instance.OverrideDensityForFertilityCurve;
+            float chanceFromDensity = __instance.CachedChanceFromDensity;
+            _ = __instance.AllWildPlants;
+            _ = __instance.MutatorWildPlants;
+            __instance.CachePlantCommonalitiesIfShould();
+            _ = __instance.PlantsCommonalitiesSum;
+            _ = __instance.CavePlantsCommonalitiesSum;
+            map.cellsInRandomOrder.Get(0); // creates the list if needed
+
+            lock (queueLock)
+            {
+                int index = wildPlantSpawnerCount;
+                if (index >= wildPlantSpawners.Length)
+                {
+                    Log.ErrorOnce("RimThreaded: too many WildPlantSpawner batches in one tick", 80311);
+                    return true;
+                }
+                if (__instance.cycleIndex >= area + num)
+                {
+                    __instance.cycleIndex = 0; // corrupt save value, vanilla would reset on the first iteration
+                }
+                WildPlantSpawnerStructure[] arr = wildPlantSpawners;
+                arr[index].spawner = __instance;
+                arr[index].map = map;
+                arr[index].randomCells = map.cellsInRandomOrder;
+                arr[index].area = area;
+                arr[index].cycleStart = __instance.cycleIndex;
+                arr[index].ticketCount = num;
+                arr[index].completedTickets = 0;
+                arr[index].densityFactor = densityFactor;
+                arr[index].desiredPlants = __instance.calculatedWholeMapNumDesiredPlants;
+                arr[index].fertilityCurve = fertilityCurve;
+                arr[index].chanceFromDensity = chanceFromDensity;
+                arr[index].desiredBeforeWrap = 0;
+                arr[index].desiredAfterWrap = 0;
+                arr[index].fertileBeforeWrap = 0;
+                arr[index].fertileAfterWrap = 0;
+                wildPlantSpawnerTicksCount += num;
+                arr[index].ticks = wildPlantSpawnerTicksCount;
+                wildPlantSpawnerCount = index + 1;
+            }
             return false;
         }
 
-
+        private static readonly object queueLock = new object();
         public static int wildPlantSpawnerCount = 0;
         public static int wildPlantSpawnerTicksCompleted = 0;
         public static int wildPlantSpawnerTicksCount = 0;
 
         public struct WildPlantSpawnerStructure
         {
-            public int ticks;
-            public int cycleIndexOffset;
+            public int ticks; // cumulative ticket count including this batch
+            public int ticketCount;
+            public int completedTickets;
+            public int cycleStart;
             public int area;
             public Map map;
             public MapCellsInRandomOrder randomCells;
-            public float plantDensity;
+            public WildPlantSpawner spawner;
+            public float densityFactor;
             public float desiredPlants;
-            public int desiredPlantsTmp1000;
-            public int desiredPlants2Tmp1000;
-            public int fertilityCellsTmp;
-            public int fertilityCells2Tmp;
-            public int fertilityCells;
-            public WildPlantSpawner wildPlantSpawnerInstance;
-            public float chance;
+            public SimpleCurve fertilityCurve;
+            public float chanceFromDensity;
+            public long desiredBeforeWrap;
+            public long desiredAfterWrap;
+            public int fertileBeforeWrap;
+            public int fertileAfterWrap;
         }
         public static WildPlantSpawnerStructure[] wildPlantSpawners = new WildPlantSpawnerStructure[9999];
 
@@ -80,80 +122,90 @@ namespace RimThreaded.RW_Patches
             {
                 int ticketIndex = Interlocked.Increment(ref wildPlantSpawnerTicksCompleted) - 1;
                 if (ticketIndex >= wildPlantSpawnerTicksCount) return;
-                int wildPlantSpawnerIndex = 0;
-                while (ticketIndex < wildPlantSpawnerTicksCount)
+                int batch = 0;
+                while (ticketIndex >= wildPlantSpawners[batch].ticks)
                 {
-                    int index = ticketIndex;
-                    while (ticketIndex >= wildPlantSpawners[wildPlantSpawnerIndex].ticks)
+                    batch++;
+                }
+                ref WildPlantSpawnerStructure work = ref wildPlantSpawners[batch];
+                int k = ticketIndex - (work.ticks - work.ticketCount);
+                try
+                {
+                    ProcessCell(ref work, k);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("Exception ticking WildPlantSpawner: " + ex);
+                }
+                finally
+                {
+                    if (Interlocked.Increment(ref work.completedTickets) == work.ticketCount)
                     {
-                        wildPlantSpawnerIndex++;
-                    }
-
-                    if (wildPlantSpawnerIndex > 0)
-                        index = ticketIndex - wildPlantSpawners[wildPlantSpawnerIndex - 1].ticks;
-                    try
-                    {
-                        WildPlantSpawnerStructure wpsStruct = wildPlantSpawners[wildPlantSpawnerIndex];
-                        WildPlantSpawner spawner = wpsStruct.wildPlantSpawnerInstance;
-                        int cycleIndex = (wpsStruct.cycleIndexOffset - index) % wpsStruct.area;
-                        IntVec3 intVec = wpsStruct.randomCells.Get(cycleIndex);
-
-                        if (wpsStruct.cycleIndexOffset - index > wpsStruct.area)
+                        try
                         {
-                            Interlocked.Add(ref wpsStruct.desiredPlants2Tmp1000,
-                                1000 * (int)spawner.GetDesiredPlantsCountAt(
-                                    intVec, intVec, wpsStruct.plantDensity));
-                            if (intVec.GetTerrain(wildPlantSpawners[wildPlantSpawnerIndex].map).fertility > 0f)
-                            {
-                                Interlocked.Increment(ref wpsStruct.fertilityCells2Tmp);
-                            }
-
-                            float mtb = spawner.GoodRoofForCavePlant(intVec) ? 130f : wpsStruct.map.Biome.wildPlantRegrowDays;
-                            if (Rand.Chance(wpsStruct.chance) && Rand.MTBEventOccurs(mtb, 60000f, 10000) && spawner.CanRegrowAt(intVec))
-                            {
-                                spawner.CheckSpawnWildPlantAt(intVec, wpsStruct.plantDensity, wpsStruct.desiredPlantsTmp1000 / 1000.0f);
-                            }
+                            Finish(ref work);
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            Interlocked.Add(ref wpsStruct.desiredPlantsTmp1000,
-                                1000 * (int)spawner.GetDesiredPlantsCountAt(intVec, intVec, wpsStruct.plantDensity));
-                            if (intVec.GetTerrain(wpsStruct.map).fertility > 0f)
-                            {
-                                Interlocked.Increment(ref wpsStruct.fertilityCellsTmp);
-                            }
-
-                            float mtb = spawner.GoodRoofForCavePlant(intVec) ? 130f : wpsStruct.map.Biome.wildPlantRegrowDays;
-                            if (Rand.Chance(wpsStruct.chance) && Rand.MTBEventOccurs(mtb, 60000f, 10000) && spawner.CanRegrowAt(intVec))
-                            {
-                                spawner.CheckSpawnWildPlantAt(intVec, wpsStruct.plantDensity, wpsStruct.desiredPlants);
-                            }
-                        }
-
-                        if (ticketIndex == wildPlantSpawners[wildPlantSpawnerIndex].ticks - 1)
-                        {
-                            if (wpsStruct.cycleIndexOffset - index >
-                                wpsStruct.area)
-                            {
-                                spawner.calculatedWholeMapNumDesiredPlants = wpsStruct.desiredPlantsTmp1000 / 1000.0f;
-                                spawner.calculatedWholeMapNumDesiredPlantsTmp = wpsStruct.desiredPlants2Tmp1000 / 1000.0f;
-                                spawner.calculatedWholeMapNumNonZeroFertilityCells = wpsStruct.fertilityCellsTmp;
-                                spawner.calculatedWholeMapNumNonZeroFertilityCellsTmp = wpsStruct.fertilityCells2Tmp;
-                            }
-                            else
-                            {
-                                spawner.calculatedWholeMapNumDesiredPlantsTmp = wpsStruct.desiredPlantsTmp1000 / 1000.0f;
-                                spawner.calculatedWholeMapNumNonZeroFertilityCells = wpsStruct.fertilityCellsTmp;
-                            }
+                            Log.Error("Exception finishing WildPlantSpawner batch: " + ex);
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Log.Error("Exception ticking WildPlantSpawner: " + ex);
-                    }
-                    ticketIndex = Interlocked.Increment(ref wildPlantSpawnerTicksCompleted) - 1;
                 }
             }
+        }
+
+        private static void ProcessCell(ref WildPlantSpawnerStructure work, int k)
+        {
+            WildPlantSpawner spawner = work.spawner;
+            Map map = work.map;
+            int position = work.cycleStart + k;
+            bool wrapped = position >= work.area;
+            IntVec3 cell = work.randomCells.Get(wrapped ? (position - work.area) % work.area : position);
+            long desired = (long)(spawner.GetDesiredPlantsCountAt(cell, work.densityFactor) * FixedPoint);
+            float fertility = map.fertilityGrid.FertilityAt(cell);
+            if (wrapped)
+            {
+                Interlocked.Add(ref work.desiredAfterWrap, desired);
+                if (fertility > 0f) Interlocked.Increment(ref work.fertileAfterWrap);
+            }
+            else
+            {
+                Interlocked.Add(ref work.desiredBeforeWrap, desired);
+                if (fertility > 0f) Interlocked.Increment(ref work.fertileBeforeWrap);
+            }
+            float mtb = spawner.GoodRoofForCavePlant(cell) ? 130f : map.BiomeAt(cell).wildPlantRegrowDays;
+            float curveChance = work.fertilityCurve.Evaluate(fertility);
+            if (Rand.Chance(curveChance > 0f ? curveChance : work.chanceFromDensity) && Rand.MTBEventOccurs(mtb, 60000f, 10000) && spawner.CanRegrowAt(cell))
+            {
+                spawner.CheckSpawnWildPlantAt(cell, work.densityFactor, work.desiredPlants);
+            }
+        }
+
+        // Equivalent of the bookkeeping vanilla does inside its loop, applied once all cells of the batch are done.
+        private static void Finish(ref WildPlantSpawnerStructure work)
+        {
+            WildPlantSpawner spawner = work.spawner;
+            float before = (float)(work.desiredBeforeWrap / FixedPoint);
+            float after = (float)(work.desiredAfterWrap / FixedPoint);
+            if (work.cycleStart + work.ticketCount > work.area)
+            {
+                // vanilla: when cycleIndex >= area -> calculated = tmp (including cells before the wrap); tmp restarts
+                spawner.calculatedWholeMapNumDesiredPlants = spawner.calculatedWholeMapNumDesiredPlantsTmp + before;
+                spawner.calculatedWholeMapNumNonZeroFertilityCells = spawner.calculatedWholeMapNumNonZeroFertilityCellsTmp + work.fertileBeforeWrap;
+                spawner.calculatedWholeMapNumDesiredPlantsTmp = after;
+                spawner.calculatedWholeMapNumNonZeroFertilityCellsTmp = work.fertileAfterWrap;
+                spawner.cycleIndex = work.cycleStart + work.ticketCount - work.area;
+            }
+            else
+            {
+                spawner.calculatedWholeMapNumDesiredPlantsTmp += before;
+                spawner.calculatedWholeMapNumNonZeroFertilityCellsTmp += work.fertileBeforeWrap;
+                spawner.cycleIndex = work.cycleStart + work.ticketCount;
+            }
+            work.spawner = null;
+            work.map = null;
+            work.randomCells = null;
+            work.fertilityCurve = null;
         }
     }
 }

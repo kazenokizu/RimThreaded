@@ -524,25 +524,53 @@ namespace RimThreaded
 			return finalCodeInstructions;
 		}
 
-		public static IEnumerable<CodeInstruction> WrapMethodInInstanceLock(IEnumerable<CodeInstruction> instructions, ILGenerator iLGenerator)
+		// Wraps the whole method body in lock(this). Every ret (early returns and value returns included) is rewritten into
+		// "store return value; leave <end>" because a ret is illegal inside a try block. The 1.4 version only handled
+		// void methods that end in a single ret, anything else produced invalid IL.
+		public static IEnumerable<CodeInstruction> WrapMethodInInstanceLock(IEnumerable<CodeInstruction> instructions, ILGenerator iLGenerator, MethodBase __originalMethod)
 		{
 			List<CodeInstruction> instructionsList = instructions.ToList();
-			int i = 0;
+			if (__originalMethod.IsStatic)
+			{
+				Log.Error("RimThreaded: instance lock transpiler applied to static method " + __originalMethod.DeclaringType + "." + __originalMethod.Name + ", skipping.");
+				foreach (CodeInstruction untouched in instructionsList)
+					yield return untouched;
+				yield break;
+			}
+			Type returnType = (__originalMethod as MethodInfo)?.ReturnType ?? typeof(void);
+			bool hasValue = returnType != typeof(void);
+			LocalBuilder returnValue = hasValue ? iLGenerator.DeclareLocal(returnType) : null;
+			Label endLabel = iLGenerator.DefineLabel();
+			LocalBuilder lockObject = iLGenerator.DeclareLocal(typeof(object));
+			LocalBuilder lockTaken = iLGenerator.DeclareLocal(typeof(bool));
 			List<CodeInstruction> loadLockObjectInstructions = new List<CodeInstruction>
 			{
 				new CodeInstruction(OpCodes.Ldarg_0)
 			};
-			LocalBuilder lockObject = iLGenerator.DeclareLocal(typeof(object));
-			LocalBuilder lockTaken = iLGenerator.DeclareLocal(typeof(bool));
-			foreach (CodeInstruction ci in EnterLock(lockObject, lockTaken, loadLockObjectInstructions, instructionsList[i]))
+			foreach (CodeInstruction ci in EnterLock(lockObject, lockTaken, loadLockObjectInstructions, instructionsList[0]))
 				yield return ci;
-			while (i < instructionsList.Count - 1)
+			foreach (CodeInstruction instruction in instructionsList)
 			{
-				yield return instructionsList[i++];
+				if (instruction.opcode == OpCodes.Ret)
+				{
+					CodeInstruction first = hasValue ? new CodeInstruction(OpCodes.Stloc, returnValue.LocalIndex) : new CodeInstruction(OpCodes.Nop);
+					first.labels = instruction.labels;
+					first.blocks = instruction.blocks;
+					yield return first;
+					yield return new CodeInstruction(OpCodes.Leave, endLabel);
+				}
+				else
+				{
+					yield return instruction;
+				}
 			}
-			foreach (CodeInstruction ci in ExitLock(iLGenerator, lockObject, lockTaken, instructionsList[i]))
+			CodeInstruction endInstruction = hasValue ? new CodeInstruction(OpCodes.Ldloc, returnValue.LocalIndex) : new CodeInstruction(OpCodes.Ret);
+			endInstruction.labels.Add(endLabel);
+			foreach (CodeInstruction ci in ExitLock(iLGenerator, lockObject, lockTaken, endInstruction))
 				yield return ci;
-			yield return instructionsList[i++];
+			yield return endInstruction;
+			if (hasValue)
+				yield return new CodeInstruction(OpCodes.Ret);
 		}
 
 		public static readonly Dictionary<object, object> replaceFields = new Dictionary<object, object>();
@@ -837,6 +865,7 @@ namespace RimThreaded
 															//GrammarResolverSimple_Transpile.RunNonDestructivePatches();//reexamine complexity
 			HediffSet_Patch.RunNonDestructivePatches(); //TODO - replace 270 instances with ThreadSafeLinkedList
 			ThingOwnerThing_Patch.RunNonDestructivePatches(); //reexamine complexity?
+			PathFinder_Patch.RunNonDestructivePatches(); //1.6: locks for PathFinder.PushRequest / PawnPathPool
 			TickList_Patch.RunNonDestructivePatches(); //allows multithreaded calls of thing.tick longtick raretick
 													   //WorkGiver_ConstructDeliverResources_Transpile.RunNonDestructivePatches(); //reexamine complexity Jobs Of Oppurtunity?
 													   //WorkGiver_DoBill_Transpile.RunNonDestructivePatches(); //better way to find bills with cache
@@ -939,7 +968,6 @@ namespace RimThreaded
 			HistoryEventsManager_Patch.RunDestructivePatches(); // 1.3 explosion fix
 			ImmunityHandler_Patch.RunDestructivePatches();			
 			JobDriver_TendPatient_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			JobGiver_ExitMap_Patch.RunDestructivePatches(); //explosions fix
 			JobGiver_Work_Patch.RunDestructivePatches();
 			JobGiver_WanderNearDutyLocation_Patch.RunDestructivePatches();
 			ListerBuildingsRepairable_Patch.RunDestructivePatches();// 1.3 explosion fix
@@ -955,14 +983,13 @@ namespace RimThreaded
 			OverlayDrawer_Patch.RunDestructivePatches(); // 1.3 explosion fix
 			Pawn_ApparelTracker_Patch.RunDestructivePatches(); //explosions fix			
 			Pawn_HealthTracker_Patch.RunDestructivePatches(); //TODO replace with ThreadSafeLinkedList
-			Pawn_MindState_Patch.RunDestructivePatches(); //TODO - destructive hack for speed up - maybe not needed
 			Pawn_PathFollower_Patch.RunDestructivePatches(); // 1.3 null ref pawn?.jobs?.curDriver?.locomotionUrgencySameAs
 			Pawn_PlayerSettings_Patch.RunDestructivePatches();
 			Pawn_RelationsTracker_Patch.RunDestructivePatches();
 			Pawn_RotationTracker_Patch.RunDestructivePatches();
 			PawnCapacitiesHandler_Patch.RunDestructivePatches();
 			PawnDestinationReservationManager_Patch.RunDestructivePatches();			
-			PawnPath_Patch.RunDestructivePatches();
+			PathFinder_Patch.RunDestructivePatches(); //1.6: FindPathNow runs jobs -> main thread only
 			PawnTextureAtlas_Patch.RunDestructivePatches();
 			PawnUtility_Patch.RunDestructivePatches();
 			Plant_Patch.RunNonDestructivePatches();

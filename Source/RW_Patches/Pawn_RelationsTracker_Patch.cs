@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -153,7 +153,7 @@ namespace RimThreaded.RW_Patches
                     ++num1;
                     float num2 = Rand.Value;
                     MentalStateDef stateDef = num2 >= 0.25 ? num2 >= 0.5 ? num2 >= 0.75 ? MentalStateDefOf.Manhunter : MentalStateDefOf.Berserk : MentalStateDefOf.Wander_Psychotic : MentalStateDefOf.Wander_Sad;
-                    directRel[index].otherPawn.mindState.mentalStateHandler.TryStartMentalState(stateDef, "MentalStateReason_BondedHumanDeath".Translate(__instance.pawn).Resolve(), true, false, null, false);
+                    directRel[index].otherPawn.mindState.mentalStateHandler.TryStartMentalState(stateDef, "MentalStateReason_BondedHumanDeath".Translate(__instance.pawn).Resolve(), forced: false, forceWake: true);
                 }
             }
             if (num1 == 1)

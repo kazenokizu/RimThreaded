@@ -1,4 +1,5 @@
-﻿using System;
+using RimWorld;
+using System;
 using Verse;
 
 namespace RimThreaded.RW_Patches
@@ -19,18 +20,15 @@ namespace RimThreaded.RW_Patches
             if (__instance.roofGrid[mcc] != def)
             {
                 __instance.roofGrid[mcc] = def;
-                map.glowGrid.MarkGlowGridDirty(c);
-                //Comment the 3 following lines and uncomment the 4th to fix the roof notification -Sernior
-                Room room = map.regionGrid.GetValidRegionAt_NoRebuild(c)?.Room;
-                if (room != null)
-                    room.Notify_RoofChanged();
-                //map.regionGrid.GetValidRegionAt_NoRebuild(c)?.District.Notify_RoofChanged(); This fixes the roofs notification instead of the 3 previous lines -Sernior
+                // 1.6 vanilla body (district-based roof notification, glow dirty via DirtyCell, event notify)
+                map.regionGrid.GetValidRegionAt_NoRebuild(c)?.District?.Notify_RoofChanged();
                 if (__instance.drawerInt != null)
                 {
                     __instance.drawerInt.SetDirty();
                 }
-
-                map.mapDrawer.MapMeshDirty(c, MapMeshFlag.Roofs);
+                map.mapDrawer.MapMeshDirty(c, MapMeshFlagDefOf.Roofs);
+                map.glowGrid.DirtyCell(c);
+                map.events.Notify_RoofChanged(c);
             }
             return false;
         }
