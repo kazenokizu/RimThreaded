@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -34,15 +34,17 @@ namespace RimThreaded.Mod_Patches
             }
             return returnList;
         }
+		// Not referenced by any registered patch (CE support here predates 1.5). Null-safe so its static initializer cannot throw
+		// when Combat Extended is absent.
 		static MethodInfo methodTryCollideWith =
 			Method(combatExtended_ProjectileCE, "dTryCollideWith", new Type[] { typeof(Thing) });
 		static Func<object, Thing, bool> funcTryCollideWith =
-			(Func<object, Thing, bool>)Delegate.CreateDelegate(typeof(Func<object, Thing, bool>), methodTryCollideWith);
+			methodTryCollideWith == null ? null : (Func<object, Thing, bool>)Delegate.CreateDelegate(typeof(Func<object, Thing, bool>), methodTryCollideWith);
 
 		static MethodInfo methodApplySuppression =
 			Method(typeof(LongEventHandler), "ApplySuppression", new Type[] { typeof(Pawn) });
 		static Action<Pawn> actionApplySuppression =
-			(Action<Pawn>)Delegate.CreateDelegate(typeof(Action<Pawn>), methodApplySuppression);
+			methodApplySuppression == null ? null : (Action<Pawn>)Delegate.CreateDelegate(typeof(Action<Pawn>), methodApplySuppression);
 
 		public static bool CheckCellForCollision3(object projectileCE, List<Thing> list, Vector3 LastPos, Thing launcher, Thing mount, bool canTargetSelf, 
 			bool flag2, Thing intendedTarget, Vector3 ExactPosition)

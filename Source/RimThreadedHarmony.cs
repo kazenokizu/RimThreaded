@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -35,12 +35,18 @@ namespace RimThreaded
 			}
 			Log.Message("RimThreaded " + Assembly.GetExecutingAssembly().GetName().Version + "  is patching methods...");
 
-			LoadFieldReplacements();
-			AddAdditionalReplacements();
-			ApplyFieldReplacements();
-			PatchDestructiveFixes();
-			PatchNonDestructiveFixes();
-			PatchModCompatibility(); 
+			// 1.6 port: every phase and every patch class is isolated. Before, one exception (Texture2D_Patch on Unity 2022.3) escaped this
+			// static constructor after the field replacements were already live, so RimThreaded never initialized its thread-static fields
+			// and vanilla code threw NullReferenceException every frame from the main menu on.
+			Safe(LoadFieldReplacements, "LoadFieldReplacements");
+			Safe(AddAdditionalReplacements, "AddAdditionalReplacements");
+			Safe(ApplyFieldReplacements, "ApplyFieldReplacements");
+			Safe(PatchDestructiveFixes, "PatchDestructiveFixes");
+			Safe(PatchNonDestructiveFixes, "PatchNonDestructiveFixes");
+			Safe(PatchModCompatibility, "PatchModCompatibility");
+			if (startupFailures.Count > 0)
+				Log.Error("RimThreaded: " + startupFailures.Count + " patch group(s) failed to apply; RimThreaded is running without them: " + string.Join(", ", startupFailures)
+					+ ". Please report this with your Player.log.");
 			//if (Prefs.LogVerbose)
 			//{
 				//RimThreadedMod.exportTranspiledMethods();
@@ -55,21 +61,67 @@ namespace RimThreaded
 			}
 		}
 
+		public static readonly List<string> startupFailures = new List<string>();
+
+		// 1.6 port: per-thread "new T()" for every replaced field that is not SelfInitialized. This used to be IL emitted into the
+		// RimThreadedReplacements dynamic assembly and attached as Harmony postfixes to RimThreaded.InitializeAllThreadStatics. Two problems:
+		// (1) emitted IL naming private vanilla types (e.g. Dictionary<string, List<GrammarResolver.RuleEntry>>) or internal mod classes is
+		// subject to the runtime's member-access checks, and (2) one throwing postfix skipped every postfix after it. Reflection is not
+		// access-checked, sets the calling thread's value of a [ThreadStatic] field, and each field is isolated.
+		static readonly List<KeyValuePair<FieldInfo, ConstructorInfo>> generatedThreadStaticInits = new List<KeyValuePair<FieldInfo, ConstructorInfo>>();
+		static readonly List<KeyValuePair<FieldInfo, ConstructorInfo>> pendingInits = new List<KeyValuePair<FieldInfo, ConstructorInfo>>();
+		static readonly HashSet<string> reportedInitFailures = new HashSet<string>();
+
+		public static void InitializeGeneratedThreadStatics()
+		{
+			foreach (KeyValuePair<FieldInfo, ConstructorInfo> init in generatedThreadStaticInits)
+			{
+				try
+				{
+					init.Key.SetValue(null, init.Value.Invoke(null));
+				}
+				catch (Exception e)
+				{
+					string name = init.Key.DeclaringType?.Name + "." + init.Key.Name;
+					lock (reportedInitFailures)
+					{
+						if (!reportedInitFailures.Add(name))
+							continue;
+					}
+					Log.Error("RimThreaded: could not initialize thread-static " + name + ": " + e);
+				}
+			}
+		}
+
+		// Runs one registration step; an exception is logged and recorded instead of aborting RimThreaded's start-up.
+		internal static void Safe(Action step, string name)
+		{
+			try
+			{
+				step();
+			}
+			catch (Exception e)
+			{
+				startupFailures.Add(name);
+				Log.Error("RimThreaded PATCH FAILED [" + name + "]: " + e);
+			}
+		}
+
 		private static void AddAdditionalReplacements()
 		{
-			SimplePool_Patch_RunNonDestructivePatches();
-			GraphicDatabase_Patch.RunNonDestructivePatches();
-			FullPool_Patch_RunNonDestructivePatches();
-			Dijkstra_Patch_RunNonDestructivePatches();
-			Region_Patch.AddFieldReplacements();
+			Safe(SimplePool_Patch_RunNonDestructivePatches, "SimplePool_Patch_RunNonDestructivePatches");
+			Safe(GraphicDatabase_Patch.RunNonDestructivePatches, "GraphicDatabase_Patch.RunNonDestructivePatches");
+			Safe(FullPool_Patch_RunNonDestructivePatches, "FullPool_Patch_RunNonDestructivePatches");
+			Safe(Dijkstra_Patch_RunNonDestructivePatches, "Dijkstra_Patch_RunNonDestructivePatches");
+			Safe(Region_Patch.AddFieldReplacements, "Region_Patch.AddFieldReplacements");
 			replaceFields.Add(Method(typeof(Time), "get_realtimeSinceStartup"), Method(typeof(Time_Patch), nameof(Time_Patch.get_realtimeSinceStartup)));
 			replaceFields.Add(Method(typeof(RenderTexture), nameof(RenderTexture.ReleaseTemporary)), Method(typeof(RenderTexture_Patch), nameof(RenderTexture_Patch.ReleaseTemporary)));
 #if DEBUG
-			Material_Patch.RunDestructivePatches();
-			Transform_Patch.RunDestructivePatches();
-			UnityEngine_Object_Patch.RunDestructivePatches();
-			Texture_Patch.RunDestructivePatches();
-			GraphicsFormatUtility_Patch.RunDestructivePatches();
+			Safe(Material_Patch.RunDestructivePatches, "Material_Patch.RunDestructivePatches");
+			Safe(Transform_Patch.RunDestructivePatches, "Transform_Patch.RunDestructivePatches");
+			Safe(UnityEngine_Object_Patch.RunDestructivePatches, "UnityEngine_Object_Patch.RunDestructivePatches");
+			Safe(Texture_Patch.RunDestructivePatches, "Texture_Patch.RunDestructivePatches");
+			Safe(GraphicsFormatUtility_Patch.RunDestructivePatches, "GraphicsFormatUtility_Patch.RunDestructivePatches");
 			replaceFields.Add(Method(typeof(Time), "get_frameCount"), Method(typeof(Time_Patch), nameof(Time_Patch.get_frameCount)));
 			replaceFields.Add(Method(typeof(Time), "get_time"), Method(typeof(Time_Patch), nameof(Time_Patch.get_time)));
 			replaceFields.Add(Method(typeof(Component), "get_transform"), Method(typeof(Component_Patch), nameof(Component_Patch.get_transform)));
@@ -163,7 +215,6 @@ namespace RimThreaded
 			//        }
 			//    }
 			//}
-			MethodInfo initializer = Method(typeof(RimThreaded), nameof(RimThreaded.InitializeAllThreadStatics));
 			ConstructorInfo threadStaticConstructor = typeof(ThreadStaticAttribute).GetConstructor(new Type[0]);
 			CustomAttributeBuilder attributeBuilder = new CustomAttributeBuilder(threadStaticConstructor, new object[0]);
 			AssemblyName aName = new AssemblyName("RimThreadedReplacements");
@@ -181,8 +232,6 @@ namespace RimThreaded
 				if (classReplacement.ThreadStatics != null && classReplacement.ThreadStatics.Count > 0)
 				{
 					TypeBuilder tb = modBuilder.DefineType(type.Name + "_Replacement", TypeAttributes.Public);
-					MethodBuilder mb = tb.DefineMethod("InitializeThreadStatics", MethodAttributes.Public | MethodAttributes.Static, typeof(void), Type.EmptyTypes);
-					ILGenerator il = mb.GetILGenerator();
 					List<KeyValuePair<FieldInfo, string>> builderFields = new List<KeyValuePair<FieldInfo, string>>();
 					foreach (ThreadStaticDetail threadStaticDetail in classReplacement.ThreadStatics)
 					{
@@ -197,7 +246,7 @@ namespace RimThreaded
 						{
 							FieldBuilder fb = tb.DefineField(fieldInfo.Name, fieldInfo.FieldType, FieldAttributes.Public | FieldAttributes.Static);
 							fb.SetCustomAttribute(attributeBuilder);
-							replacementField = fb;
+							replacementField = null; // resolved after CreateType below
 							builderFields.Add(new KeyValuePair<FieldInfo, string>(fieldInfo, fb.Name));
 						}
 						else
@@ -215,27 +264,27 @@ namespace RimThreaded
 								continue;
 							}
 						}
-						replaceFields[fieldInfo] = replacementField;
+						if (replacementField != null)
+							replaceFields[fieldInfo] = replacementField;
 						if (!threadStaticDetail.SelfInitialized)
 						{
 							ConstructorInfo constructor = fieldInfo.FieldType.GetConstructor(Type.EmptyTypes);
 							if (constructor != null)
-							{
-								il.Emit(OpCodes.Newobj, constructor);
-								il.Emit(OpCodes.Stsfld, replacementField);
-							}
+								pendingInits.Add(new KeyValuePair<FieldInfo, ConstructorInfo>(replacementField ?? fieldInfo, constructor));
 						}
 					}
-					il.Emit(OpCodes.Ret);
 					Type newFieldType = tb.CreateType();
 					// FieldBuilder objects are only valid while the type is being emitted; transpilers need the real runtime fields
 					foreach (KeyValuePair<FieldInfo, string> builderField in builderFields)
 					{
-						replaceFields[builderField.Key] = newFieldType.GetField(builderField.Value, BindingFlags.Public | BindingFlags.Static);
+						FieldInfo runtimeField = newFieldType.GetField(builderField.Value, BindingFlags.Public | BindingFlags.Static);
+						replaceFields[builderField.Key] = runtimeField;
+						for (int i = 0; i < pendingInits.Count; i++)
+							if (pendingInits[i].Key == builderField.Key)
+								pendingInits[i] = new KeyValuePair<FieldInfo, ConstructorInfo>(runtimeField, pendingInits[i].Value);
 					}
-					MethodInfo mb2 = Method(newFieldType, "InitializeThreadStatics");
-					HarmonyMethod pf = new HarmonyMethod(mb2);
-					harmony.Patch(initializer, postfix: pf);
+					generatedThreadStaticInits.AddRange(pendingInits);
+					pendingInits.Clear();
 				}
 			}
 		}
@@ -905,44 +954,44 @@ namespace RimThreaded
 		private static void PatchNonDestructiveFixes()
 		{
 			//---REQUIRED---
-			GameObject_Patch.RunNonDestructivePatches(); //Prevents Game Crash from wooden floors and others
-			LongEventHandler_Patch.RunNonDestructivePatches(); //replaced concurrentqueue and run init on new threads
+			Safe(GameObject_Patch.RunNonDestructivePatches, "GameObject_Patch.RunNonDestructivePatches"); //Prevents Game Crash from wooden floors and others
+			Safe(LongEventHandler_Patch.RunNonDestructivePatches, "LongEventHandler_Patch.RunNonDestructivePatches"); //replaced concurrentqueue and run init on new threads
 
 			
 
 			//---Simple---
-			AlertsReadout_Patch.RunNonDestructivesPatches(); //this will disable alert checks on ultrafast speed for an added speed boost
-			Area_Patch.RunNonDestructivePatches(); //added for sowing area speedup
-			CompSpawnSubplant_Transpile.RunNonDestructivePatches(); //fixes bug with royalty spawning subplants
-			Designator_Haul_Patch.RunNonDestructivePatches(); //add thing to hauling list when user specifically designates it via UI
-			CompForbiddable_Patch.RunNonDestructivePatches(); //add thing to hauling list when user specifically unforbids it via UI
-			TimeControls_Patch.RunNonDestructivePatches(); //allow speed 4
-			ZoneManager_Patch.RunNonDestructivePatches(); //recheck growing zone when upon zone grid add
-			Zone_Patch.RunNonDestructivePatches(); //recheck growing zone when upon check haul destination call
+			Safe(AlertsReadout_Patch.RunNonDestructivesPatches, "AlertsReadout_Patch.RunNonDestructivesPatches"); //this will disable alert checks on ultrafast speed for an added speed boost
+			Safe(Area_Patch.RunNonDestructivePatches, "Area_Patch.RunNonDestructivePatches"); //added for sowing area speedup
+			Safe(CompSpawnSubplant_Transpile.RunNonDestructivePatches, "CompSpawnSubplant_Transpile.RunNonDestructivePatches"); //fixes bug with royalty spawning subplants
+			Safe(Designator_Haul_Patch.RunNonDestructivePatches, "Designator_Haul_Patch.RunNonDestructivePatches"); //add thing to hauling list when user specifically designates it via UI
+			Safe(CompForbiddable_Patch.RunNonDestructivePatches, "CompForbiddable_Patch.RunNonDestructivePatches"); //add thing to hauling list when user specifically unforbids it via UI
+			Safe(TimeControls_Patch.RunNonDestructivePatches, "TimeControls_Patch.RunNonDestructivePatches"); //allow speed 4
+			Safe(ZoneManager_Patch.RunNonDestructivePatches, "ZoneManager_Patch.RunNonDestructivePatches"); //recheck growing zone when upon zone grid add
+			Safe(Zone_Patch.RunNonDestructivePatches, "Zone_Patch.RunNonDestructivePatches"); //recheck growing zone when upon check haul destination call
 			//HediffGiver_Hypothermia_Transpile.RunNonDestructivePatches(); //speed up for comfy temperature //1.4 reexamine
-			BattleLog_Transpile.RunNonDestructivePatches(); //if still causing issues, rewrite using ThreadSafeLinkedLists
+			Safe(BattleLog_Transpile.RunNonDestructivePatches, "BattleLog_Transpile.RunNonDestructivePatches"); //if still causing issues, rewrite using ThreadSafeLinkedLists
 															//GrammarResolver_Transpile.RunNonDestructivePatches();//reexamine complexity
 															//GrammarResolverSimple_Transpile.RunNonDestructivePatches();//reexamine complexity
-			HediffSet_Patch.RunNonDestructivePatches(); //TODO - replace 270 instances with ThreadSafeLinkedList
-			ThingOwnerThing_Patch.RunNonDestructivePatches(); //reexamine complexity?
-			PathFinder_Patch.RunNonDestructivePatches(); //1.6: locks for PathFinder.PushRequest / PawnPathPool
-			TickList_Patch.RunNonDestructivePatches(); //allows multithreaded calls of thing.tick longtick raretick
+			Safe(HediffSet_Patch.RunNonDestructivePatches, "HediffSet_Patch.RunNonDestructivePatches"); //TODO - replace 270 instances with ThreadSafeLinkedList
+			Safe(ThingOwnerThing_Patch.RunNonDestructivePatches, "ThingOwnerThing_Patch.RunNonDestructivePatches"); //reexamine complexity?
+			Safe(PathFinder_Patch.RunNonDestructivePatches, "PathFinder_Patch.RunNonDestructivePatches"); //1.6: locks for PathFinder.PushRequest / PawnPathPool
+			Safe(TickList_Patch.RunNonDestructivePatches, "TickList_Patch.RunNonDestructivePatches"); //allows multithreaded calls of thing.tick longtick raretick
 													   //WorkGiver_ConstructDeliverResources_Transpile.RunNonDestructivePatches(); //reexamine complexity Jobs Of Oppurtunity?
 													   //WorkGiver_DoBill_Transpile.RunNonDestructivePatches(); //better way to find bills with cache
 													   //Pawn_RelationsTracker_Patch.RunNonDestructivePatches(); //transpile not needed with new threadsafe simplepools
-			PawnCapacitiesHandler_Patch.RunNonDestructivePatches(); //TODO fix transpile for 1 of 2 methods try inside of try perhaps?
-			Zone_Growing_Patch.RunNonDestructivePatches();
+			Safe(PawnCapacitiesHandler_Patch.RunNonDestructivePatches, "PawnCapacitiesHandler_Patch.RunNonDestructivePatches"); //TODO fix transpile for 1 of 2 methods try inside of try perhaps?
+			Safe(Zone_Growing_Patch.RunNonDestructivePatches, "Zone_Growing_Patch.RunNonDestructivePatches");
 			
-			CellFinder_Patch.RunNonDestructivePatches(); //explosion fix
+			Safe(CellFinder_Patch.RunNonDestructivePatches, "CellFinder_Patch.RunNonDestructivePatches"); //explosion fix
 			
-			GenGrid_Patch.RunNonDestructivePatches(); //explosion fix
-			ThinkNode_JoinVoluntarilyJoinableLord_Patch.RunDestructivePatches(); //explosion fix
-			TransportShipManager_Patch.RunNonDestructivePatches();
+			Safe(GenGrid_Patch.RunNonDestructivePatches, "GenGrid_Patch.RunNonDestructivePatches"); //explosion fix
+			Safe(ThinkNode_JoinVoluntarilyJoinableLord_Patch.RunDestructivePatches, "ThinkNode_JoinVoluntarilyJoinableLord_Patch.RunDestructivePatches"); //explosion fix
+			Safe(TransportShipManager_Patch.RunNonDestructivePatches, "TransportShipManager_Patch.RunNonDestructivePatches");
 			//RestUtility_Patch.RunNonDestructivePatches(); // 1.3 explosion fix - not sure why this causes bug with sleeping
-			GrammarResolver_Patch.RunNonDestructivePatches(); //TODO 1.4 reexamine
-			Sustainer_Patch.RunNonDestructivePatches();
+			Safe(GrammarResolver_Patch.RunNonDestructivePatches, "GrammarResolver_Patch.RunNonDestructivePatches"); //TODO 1.4 reexamine
+			Safe(Sustainer_Patch.RunNonDestructivePatches, "Sustainer_Patch.RunNonDestructivePatches");
 			//RegionAndRoomQuery_Patch.RunNonDestructivePatches();
-			MemoryUtility_Patch.RunNonDestructivePatches(); //Mod memory cleanup on game load, or main menu
+			Safe(MemoryUtility_Patch.RunNonDestructivePatches, "MemoryUtility_Patch.RunNonDestructivePatches"); //Mod memory cleanup on game load, or main menu
 			//PawnCapacityUtility_Patch.RunNonDestructivePatches(); //1.4 needed?
 
 
@@ -954,187 +1003,187 @@ namespace RimThreaded
 		private static void PatchDestructiveFixes()
 		{
 			//---REQUIRED---
-			TickManager_Patch.RunDestructivePatches(); //Redirects DoSingleTick to RimThreaded
+			Safe(TickManager_Patch.RunDestructivePatches, "TickManager_Patch.RunDestructivePatches"); //Redirects DoSingleTick to RimThreaded
 
 			//---Main-thread-only calls--- TODO - low priority. These can likely be made more uniform
-			AudioSource_Patch.RunDestructivePatches();
-			AudioSourceMaker_Patch.RunDestructivePatches();
-			ContentFinder_Texture2D_Patch.RunDestructivePatches();
-			GenDraw_Patch.RunDestructivePatches(); // DrawMeshNowOrLater (HotSprings and Kijin Race)
-			GraphicDatabaseHeadRecords_Patch.RunDestructivePatches();
-			Graphics_Patch.RunDestructivePatches();//Graphics (Giddy-Up and others)
-			GUIStyle_Patch.RunDestructivePatches();
-			LightningBoltMeshMaker_Patch.RunDestructivePatches();
-			MapGenerator_Patch.RunDestructivePatches();//MapGenerator (Z-levels)
-			MaterialPool_Patch.RunDestructivePatches();
-			MeshMakerPlanes_Patch.RunDestructivePatches();
-			MeshMakerShadows_Patch.RunDestructivePatches();
-			MoteBubble_Patch.RunDestructivePatches(); //initial 1.3 patch (MaterialPropertyBlock) - main thread UnityEngine.MaterialPropertyBlock
-			RenderTexture_Patch.RunDestructivePatches();//RenderTexture (Giddy-Up)
-			SectionLayer_Patch.RunDestructivePatches();
-			Texture2D_Patch.RunDestructivePatches();//Graphics (Giddy-Up)
-			Text_Patch.RunDestructivePatches(); //unity get_CurFontStyle on main thread
+			Safe(AudioSource_Patch.RunDestructivePatches, "AudioSource_Patch.RunDestructivePatches");
+			Safe(AudioSourceMaker_Patch.RunDestructivePatches, "AudioSourceMaker_Patch.RunDestructivePatches");
+			Safe(ContentFinder_Texture2D_Patch.RunDestructivePatches, "ContentFinder_Texture2D_Patch.RunDestructivePatches");
+			Safe(GenDraw_Patch.RunDestructivePatches, "GenDraw_Patch.RunDestructivePatches"); // DrawMeshNowOrLater (HotSprings and Kijin Race)
+			Safe(GraphicDatabaseHeadRecords_Patch.RunDestructivePatches, "GraphicDatabaseHeadRecords_Patch.RunDestructivePatches");
+			Safe(Graphics_Patch.RunDestructivePatches, "Graphics_Patch.RunDestructivePatches");//Graphics (Giddy-Up and others)
+			Safe(GUIStyle_Patch.RunDestructivePatches, "GUIStyle_Patch.RunDestructivePatches");
+			Safe(LightningBoltMeshMaker_Patch.RunDestructivePatches, "LightningBoltMeshMaker_Patch.RunDestructivePatches");
+			Safe(MapGenerator_Patch.RunDestructivePatches, "MapGenerator_Patch.RunDestructivePatches");//MapGenerator (Z-levels)
+			Safe(MaterialPool_Patch.RunDestructivePatches, "MaterialPool_Patch.RunDestructivePatches");
+			Safe(MeshMakerPlanes_Patch.RunDestructivePatches, "MeshMakerPlanes_Patch.RunDestructivePatches");
+			Safe(MeshMakerShadows_Patch.RunDestructivePatches, "MeshMakerShadows_Patch.RunDestructivePatches");
+			Safe(MoteBubble_Patch.RunDestructivePatches, "MoteBubble_Patch.RunDestructivePatches"); //initial 1.3 patch (MaterialPropertyBlock) - main thread UnityEngine.MaterialPropertyBlock
+			Safe(RenderTexture_Patch.RunDestructivePatches, "RenderTexture_Patch.RunDestructivePatches");//RenderTexture (Giddy-Up)
+			Safe(SectionLayer_Patch.RunDestructivePatches, "SectionLayer_Patch.RunDestructivePatches");
+			Safe(Texture2D_Patch.RunDestructivePatches, "Texture2D_Patch.RunDestructivePatches");//Graphics (Giddy-Up)
+			Safe(Text_Patch.RunDestructivePatches, "Text_Patch.RunDestructivePatches"); //unity get_CurFontStyle on main thread
 
 			//---Multithreaded Ticking---
-			FactionManager_Patch.RunDestructivePatches(); //allows multithreaded ticking of factions
-			WildPlantSpawner_Patch.RunDestructivePatches(); //allows multithreaded icking of WildPlantSpawner
-			WindManager_Patch.RunDestructivePatches();//allows multithreaded icking of WindManager													  
-			WorldComponentUtility_Patch.RunDestructivePatches(); //allows multithreaded icking of WorldComponentUtility
-			WorldObjectsHolder_Patch.RunDestructivePatches(); //Class was largely overhauled to allow multithreaded ticking for WorldPawns.Tick()
-			WorldPawns_Patch.RunDestructivePatches(); //Class was largely overhauled to allow multithreaded ticking for WorldPawns.Tick()
-			Archive_Patch.RunDestructivePatches(); //explosions fix
-			Alert_ColonistLeftUnburied_Patch.RunDestructivePatches(); //1.3 explosions fix
-			Alert_MinorBreakRisk_Patch.RunDestructivePatches(); //performance rewrite
-			AttackTargetsCache_Patch.RunDestructivesPatches(); //TODO: write ExposeData and change concurrentdictionary
-			Battle_Patch.RunDestructivePatches(); //added lock for battle - could use linkedlist
-			BeautyUtility_Patch.RunDestructivePatches(); // 1.3 explosion fix null ref
+			Safe(FactionManager_Patch.RunDestructivePatches, "FactionManager_Patch.RunDestructivePatches"); //allows multithreaded ticking of factions
+			Safe(WildPlantSpawner_Patch.RunDestructivePatches, "WildPlantSpawner_Patch.RunDestructivePatches"); //allows multithreaded icking of WildPlantSpawner
+			Safe(WindManager_Patch.RunDestructivePatches, "WindManager_Patch.RunDestructivePatches");//allows multithreaded icking of WindManager													  
+			Safe(WorldComponentUtility_Patch.RunDestructivePatches, "WorldComponentUtility_Patch.RunDestructivePatches"); //allows multithreaded icking of WorldComponentUtility
+			Safe(WorldObjectsHolder_Patch.RunDestructivePatches, "WorldObjectsHolder_Patch.RunDestructivePatches"); //Class was largely overhauled to allow multithreaded ticking for WorldPawns.Tick()
+			Safe(WorldPawns_Patch.RunDestructivePatches, "WorldPawns_Patch.RunDestructivePatches"); //Class was largely overhauled to allow multithreaded ticking for WorldPawns.Tick()
+			Safe(Archive_Patch.RunDestructivePatches, "Archive_Patch.RunDestructivePatches"); //explosions fix
+			Safe(Alert_ColonistLeftUnburied_Patch.RunDestructivePatches, "Alert_ColonistLeftUnburied_Patch.RunDestructivePatches"); //1.3 explosions fix
+			Safe(Alert_MinorBreakRisk_Patch.RunDestructivePatches, "Alert_MinorBreakRisk_Patch.RunDestructivePatches"); //performance rewrite
+			Safe(AttackTargetsCache_Patch.RunDestructivesPatches, "AttackTargetsCache_Patch.RunDestructivesPatches"); //TODO: write ExposeData and change concurrentdictionary
+			Safe(Battle_Patch.RunDestructivePatches, "Battle_Patch.RunDestructivePatches"); //added lock for battle - could use linkedlist
+			Safe(BeautyUtility_Patch.RunDestructivePatches, "BeautyUtility_Patch.RunDestructivePatches"); // 1.3 explosion fix null ref
 			
-			Building_Door_Patch.RunDestructivePatches(); //strange bug
-			Building_PlantGrower_Patch.RunNonDestructivePatches();
-			CompCauseGameCondition_Patch.RunDestructivePatches(); //TODO - ThreadSafeLinkedList
-			CompSpawnSubplant_Transpile.RunDestructivePatches(); //could use interlock instead
-			Corpse_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			DesignationManager_Patch.RunDestructivePatches(); //added for development build
-			District_Patch.RunDestructivePatches(); // 1.3 fix for cachedOpenRoofState null ref - TODO - optimize locks
-			DrugAIUtility_Patch.RunDestructivePatches(); //vanilla bug
-			DynamicDrawManager_Patch.RunDestructivePatches(); //TODO - candidate for ThreadSafeLinkedList?
-			FilthMaker_Patch.RunDestructivePatches(); //replacing a few LINQ queries could possibly improve perf 
-			FireUtility_Patch.RunDestructivePatches();
-			FleckStatic_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			FleckSystemBase_Patch.RunDestructivePatches(); // 1.3 explosion fix
+			Safe(Building_Door_Patch.RunDestructivePatches, "Building_Door_Patch.RunDestructivePatches"); //strange bug
+			Safe(Building_PlantGrower_Patch.RunNonDestructivePatches, "Building_PlantGrower_Patch.RunNonDestructivePatches");
+			Safe(CompCauseGameCondition_Patch.RunDestructivePatches, "CompCauseGameCondition_Patch.RunDestructivePatches"); //TODO - ThreadSafeLinkedList
+			Safe(CompSpawnSubplant_Transpile.RunDestructivePatches, "CompSpawnSubplant_Transpile.RunDestructivePatches"); //could use interlock instead
+			Safe(Corpse_Patch.RunDestructivePatches, "Corpse_Patch.RunDestructivePatches"); // 1.3 explosion fix
+			Safe(DesignationManager_Patch.RunDestructivePatches, "DesignationManager_Patch.RunDestructivePatches"); //added for development build
+			Safe(District_Patch.RunDestructivePatches, "District_Patch.RunDestructivePatches"); // 1.3 fix for cachedOpenRoofState null ref - TODO - optimize locks
+			Safe(DrugAIUtility_Patch.RunDestructivePatches, "DrugAIUtility_Patch.RunDestructivePatches"); //vanilla bug
+			Safe(DynamicDrawManager_Patch.RunDestructivePatches, "DynamicDrawManager_Patch.RunDestructivePatches"); //TODO - candidate for ThreadSafeLinkedList?
+			Safe(FilthMaker_Patch.RunDestructivePatches, "FilthMaker_Patch.RunDestructivePatches"); //replacing a few LINQ queries could possibly improve perf 
+			Safe(FireUtility_Patch.RunDestructivePatches, "FireUtility_Patch.RunDestructivePatches");
+			Safe(FleckStatic_Patch.RunDestructivePatches, "FleckStatic_Patch.RunDestructivePatches"); // 1.3 explosion fix
+			Safe(FleckSystemBase_Patch.RunDestructivePatches, "FleckSystemBase_Patch.RunDestructivePatches"); // 1.3 explosion fix
 			//FleckSystemBaseFleckThrown_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			FoodUtility_Patch.RunDestructivePatches(); //1.3 GetMeatSourceCategory Human from NutrientPasteDispenser
+			Safe(FoodUtility_Patch.RunDestructivePatches, "FoodUtility_Patch.RunDestructivePatches"); //1.3 GetMeatSourceCategory Human from NutrientPasteDispenser
 
 			//GenClosest_Patch.RunDestructivePatches(); replaces RegionwiseBFSWorker - no diff noticable
 			//GenCollection_Patch.RunDestructivePatches(); may be fixed now that simplepools work
 
 			//GenPlace_Patch.RunDestructivePatches(); // 1.3 TryPlaceThing null thing after kill
 
-			GenSpawn_Patch.RunDestructivePatches(); //fixes null.destroy - commonly caused by gysers
-			GenTypes_Patch.RunDestructivePatches(); //possibly occurs with combat extended
-			GlobalControlsUtility_Patch.RunDestructivePatches(); //Adds TPS indicator
-			GoodwillSituationManager_Patch.RunDestructivePatches(); //initial 1.3 patch
-			GoodwillSituationWorker_MemeCompatibility_Patch.RunDestructivePatches(); //initial 1.3 patch
-			GridsUtility_Patch.RunDestructivePatches(); // 1.3 explosion fix
+			Safe(GenSpawn_Patch.RunDestructivePatches, "GenSpawn_Patch.RunDestructivePatches"); //fixes null.destroy - commonly caused by gysers
+			Safe(GenTypes_Patch.RunDestructivePatches, "GenTypes_Patch.RunDestructivePatches"); //possibly occurs with combat extended
+			Safe(GlobalControlsUtility_Patch.RunDestructivePatches, "GlobalControlsUtility_Patch.RunDestructivePatches"); //Adds TPS indicator
+			Safe(GoodwillSituationManager_Patch.RunDestructivePatches, "GoodwillSituationManager_Patch.RunDestructivePatches"); //initial 1.3 patch
+			Safe(GoodwillSituationWorker_MemeCompatibility_Patch.RunDestructivePatches, "GoodwillSituationWorker_MemeCompatibility_Patch.RunDestructivePatches"); //initial 1.3 patch
+			Safe(GridsUtility_Patch.RunDestructivePatches, "GridsUtility_Patch.RunDestructivePatches"); // 1.3 explosion fix
 			
 			//GrammarResolver_Patch.RunDestructivePatches();
             
-			HediffSet_Patch.RunDestructivePatches();
-			HistoryEventsManager_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			ImmunityHandler_Patch.RunDestructivePatches();			
-			JobDriver_TendPatient_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			JobGiver_Work_Patch.RunDestructivePatches();
-			JobGiver_WanderNearDutyLocation_Patch.RunDestructivePatches();
-			ListerBuildingsRepairable_Patch.RunDestructivePatches();// 1.3 explosion fix
-			ListerThings_Patch.RunDestructivePatches();			
+			Safe(HediffSet_Patch.RunDestructivePatches, "HediffSet_Patch.RunDestructivePatches");
+			Safe(HistoryEventsManager_Patch.RunDestructivePatches, "HistoryEventsManager_Patch.RunDestructivePatches"); // 1.3 explosion fix
+			Safe(ImmunityHandler_Patch.RunDestructivePatches, "ImmunityHandler_Patch.RunDestructivePatches");			
+			Safe(JobDriver_TendPatient_Patch.RunDestructivePatches, "JobDriver_TendPatient_Patch.RunDestructivePatches"); // 1.3 explosion fix
+			Safe(JobGiver_Work_Patch.RunDestructivePatches, "JobGiver_Work_Patch.RunDestructivePatches");
+			Safe(JobGiver_WanderNearDutyLocation_Patch.RunDestructivePatches, "JobGiver_WanderNearDutyLocation_Patch.RunDestructivePatches");
+			Safe(ListerBuildingsRepairable_Patch.RunDestructivePatches, "ListerBuildingsRepairable_Patch.RunDestructivePatches");// 1.3 explosion fix
+			Safe(ListerThings_Patch.RunDestructivePatches, "ListerThings_Patch.RunDestructivePatches");			
 			//JobMaker_Patch.RunDestructivePatches(); should be fixed by the simplepool patch
-			LongEventHandler_Patch.RunDestructivePatches(); //TODO - could use field replacement for conncurrentqueue
-			Lord_Patch.RunDestructivePatches();
-			LordToil_Siege_Patch.RunDestructivePatches(); //TODO does locks around clears and adds. ThreadSafeLinkedList
-			Map_Patch.RunDestructivePatches(); //TODO - discover root cause
-			MemoryThoughtHandler_Patch.RunDestructivePatches();
-			Messages_Patch.RunDestructivePatches();// 1.3 explosion fix
-			OverlayDrawer_Patch.RunDestructivePatches(); // 1.3 explosion fix
-			Pawn_ApparelTracker_Patch.RunDestructivePatches(); //explosions fix			
-			Pawn_HealthTracker_Patch.RunDestructivePatches(); //TODO replace with ThreadSafeLinkedList
-			Pawn_PathFollower_Patch.RunDestructivePatches(); // 1.3 null ref pawn?.jobs?.curDriver?.locomotionUrgencySameAs
-			Pawn_RelationsTracker_Patch.RunDestructivePatches();
-			Pawn_RotationTracker_Patch.RunDestructivePatches();
-			PawnCapacitiesHandler_Patch.RunDestructivePatches();
-			PawnDestinationReservationManager_Patch.RunDestructivePatches();			
-			PathFinder_Patch.RunDestructivePatches(); //1.6: FindPathNow runs jobs -> main thread only
-			PawnTextureAtlas_Patch.RunDestructivePatches();
-			PawnUtility_Patch.RunDestructivePatches();
-			Plant_Patch.RunNonDestructivePatches();
-			PlayLog_Patch.RunDestructivePatches();
-			PhysicalInteractionReservationManager_Patch.RunDestructivePatches(); //TODO: write ExposeData and change concurrent dictionary
-			Rand_Patch.RunDestructivePatches(); //Simple
-			Reachability_Patch.RunDestructivePatches();
-			ReachabilityCache_Patch.RunDestructivePatches(); //TODO simplfy instance.fields
-			RealtimeMoteList_Patch.RunDestructivePatches();
-            RecordWorker_TimeGettingJoy_Patch.RunDestructivePatches();
-			RegionAndRoomUpdater_Patch.RunDestructivePatches();
-			RegionDirtyer_Patch.RunDestructivePatches();
+			Safe(LongEventHandler_Patch.RunDestructivePatches, "LongEventHandler_Patch.RunDestructivePatches"); //TODO - could use field replacement for conncurrentqueue
+			Safe(Lord_Patch.RunDestructivePatches, "Lord_Patch.RunDestructivePatches");
+			Safe(LordToil_Siege_Patch.RunDestructivePatches, "LordToil_Siege_Patch.RunDestructivePatches"); //TODO does locks around clears and adds. ThreadSafeLinkedList
+			Safe(Map_Patch.RunDestructivePatches, "Map_Patch.RunDestructivePatches"); //TODO - discover root cause
+			Safe(MemoryThoughtHandler_Patch.RunDestructivePatches, "MemoryThoughtHandler_Patch.RunDestructivePatches");
+			Safe(Messages_Patch.RunDestructivePatches, "Messages_Patch.RunDestructivePatches");// 1.3 explosion fix
+			Safe(OverlayDrawer_Patch.RunDestructivePatches, "OverlayDrawer_Patch.RunDestructivePatches"); // 1.3 explosion fix
+			Safe(Pawn_ApparelTracker_Patch.RunDestructivePatches, "Pawn_ApparelTracker_Patch.RunDestructivePatches"); //explosions fix			
+			Safe(Pawn_HealthTracker_Patch.RunDestructivePatches, "Pawn_HealthTracker_Patch.RunDestructivePatches"); //TODO replace with ThreadSafeLinkedList
+			Safe(Pawn_PathFollower_Patch.RunDestructivePatches, "Pawn_PathFollower_Patch.RunDestructivePatches"); // 1.3 null ref pawn?.jobs?.curDriver?.locomotionUrgencySameAs
+			Safe(Pawn_RelationsTracker_Patch.RunDestructivePatches, "Pawn_RelationsTracker_Patch.RunDestructivePatches");
+			Safe(Pawn_RotationTracker_Patch.RunDestructivePatches, "Pawn_RotationTracker_Patch.RunDestructivePatches");
+			Safe(PawnCapacitiesHandler_Patch.RunDestructivePatches, "PawnCapacitiesHandler_Patch.RunDestructivePatches");
+			Safe(PawnDestinationReservationManager_Patch.RunDestructivePatches, "PawnDestinationReservationManager_Patch.RunDestructivePatches");			
+			Safe(PathFinder_Patch.RunDestructivePatches, "PathFinder_Patch.RunDestructivePatches"); //1.6: FindPathNow runs jobs -> main thread only
+			Safe(PawnTextureAtlas_Patch.RunDestructivePatches, "PawnTextureAtlas_Patch.RunDestructivePatches");
+			Safe(PawnUtility_Patch.RunDestructivePatches, "PawnUtility_Patch.RunDestructivePatches");
+			Safe(Plant_Patch.RunNonDestructivePatches, "Plant_Patch.RunNonDestructivePatches");
+			Safe(PlayLog_Patch.RunDestructivePatches, "PlayLog_Patch.RunDestructivePatches");
+			Safe(PhysicalInteractionReservationManager_Patch.RunDestructivePatches, "PhysicalInteractionReservationManager_Patch.RunDestructivePatches"); //TODO: write ExposeData and change concurrent dictionary
+			Safe(Rand_Patch.RunDestructivePatches, "Rand_Patch.RunDestructivePatches"); //Simple
+			Safe(Reachability_Patch.RunDestructivePatches, "Reachability_Patch.RunDestructivePatches");
+			Safe(ReachabilityCache_Patch.RunDestructivePatches, "ReachabilityCache_Patch.RunDestructivePatches"); //TODO simplfy instance.fields
+			Safe(RealtimeMoteList_Patch.RunDestructivePatches, "RealtimeMoteList_Patch.RunDestructivePatches");
+            Safe(RecordWorker_TimeGettingJoy_Patch.RunDestructivePatches, "RecordWorker_TimeGettingJoy_Patch.RunDestructivePatches");
+			Safe(RegionAndRoomUpdater_Patch.RunDestructivePatches, "RegionAndRoomUpdater_Patch.RunDestructivePatches");
+			Safe(RegionDirtyer_Patch.RunDestructivePatches, "RegionDirtyer_Patch.RunDestructivePatches");
 			
-			RegionGrid_Patch.RunDestructivePatches();
-			RegionLink_Patch.RunDestructivePatches();
-			ResourceCounter_Patch.RunDestructivePatches();
+			Safe(RegionGrid_Patch.RunDestructivePatches, "RegionGrid_Patch.RunDestructivePatches");
+			Safe(RegionLink_Patch.RunDestructivePatches, "RegionLink_Patch.RunDestructivePatches");
+			Safe(ResourceCounter_Patch.RunDestructivePatches, "ResourceCounter_Patch.RunDestructivePatches");
 			//RoofGrid_Patch is causing problems to the roof notification in 1.3 a fix is also inside the Patch in case  this is needed for something else I am commenting this for now -Senior
-			RulePackDef_Patch.RunDestructivePatches(); //explosions fix - grammar
-			SteadyEnvironmentEffects_Patch.RunDestructivePatches();
-			StoreUtility_Patch.RunDestructivePatches(); // 1.3 explosion
-			StoryState_Patch.RunDestructivePatches(); //WrapMethodInInstanceLock
-			TaleManager_Patch.RunDestructivePatches();
-			ThingGrid_Patch.RunDestructivePatches();
-			Thing_Patch.RunDestructivePatches(); //Thing_Patch.TakeDamage is a good candidate for transpile
-			ThinkNode_SubtreesByTag_Patch.RunDestructivePatches();
-			ThinkNode_ForbidOutsideFlagRadius_Patch.RunDestructivePatches(); //base method override is double destructive 
+			Safe(RulePackDef_Patch.RunDestructivePatches, "RulePackDef_Patch.RunDestructivePatches"); //explosions fix - grammar
+			Safe(SteadyEnvironmentEffects_Patch.RunDestructivePatches, "SteadyEnvironmentEffects_Patch.RunDestructivePatches");
+			Safe(StoreUtility_Patch.RunDestructivePatches, "StoreUtility_Patch.RunDestructivePatches"); // 1.3 explosion
+			Safe(StoryState_Patch.RunDestructivePatches, "StoryState_Patch.RunDestructivePatches"); //WrapMethodInInstanceLock
+			Safe(TaleManager_Patch.RunDestructivePatches, "TaleManager_Patch.RunDestructivePatches");
+			Safe(ThingGrid_Patch.RunDestructivePatches, "ThingGrid_Patch.RunDestructivePatches");
+			Safe(Thing_Patch.RunDestructivePatches, "Thing_Patch.RunDestructivePatches"); //Thing_Patch.TakeDamage is a good candidate for transpile
+			Safe(ThinkNode_SubtreesByTag_Patch.RunDestructivePatches, "ThinkNode_SubtreesByTag_Patch.RunDestructivePatches");
+			Safe(ThinkNode_ForbidOutsideFlagRadius_Patch.RunDestructivePatches, "ThinkNode_ForbidOutsideFlagRadius_Patch.RunDestructivePatches"); //base method override is double destructive 
 
-			TileTemperaturesComp_Patch.RunDestructivePatches(); //TODO - good simple transpile candidate
-			UniqueIDsManager_Patch.RunDestructivePatches(); // Simple use of Interlocked.Increment
-			Verb_Patch.RunDestructivePatches(); // TODO: why is this causing null?
-			WealthWatcher_Patch.RunDestructivePatches();
+			Safe(TileTemperaturesComp_Patch.RunDestructivePatches, "TileTemperaturesComp_Patch.RunDestructivePatches"); //TODO - good simple transpile candidate
+			Safe(UniqueIDsManager_Patch.RunDestructivePatches, "UniqueIDsManager_Patch.RunDestructivePatches"); // Simple use of Interlocked.Increment
+			Safe(Verb_Patch.RunDestructivePatches, "Verb_Patch.RunDestructivePatches"); // TODO: why is this causing null?
+			Safe(WealthWatcher_Patch.RunDestructivePatches, "WealthWatcher_Patch.RunDestructivePatches");
 			//WorkGiver_GrowerSow_Patch.RunDestructivePatches();
 			
 			
 
 			//complex methods that need further review for simplification
-			AttackTargetReservationManager_Patch.RunDestructivePatches();
-			BiomeDef_Patch.RunDestructivePatches();
-			FloodFiller_Patch.RunDestructivePatches();//FloodFiller - inefficient global lock - threadstatics might help do these concurrently?
-			JobQueue_Patch.RunDestructivePatches();
-			MapPawns_Patch.RunDestructivePatches(); //TODO: Affects Animal Master Assignment
-			MeditationFocusTypeAvailabilityCache_Patch.RunDestructivePatches();
-			Pawn_JobTracker_Patch.RunDestructivePatches();
-			Pawn_Patch.RunDestructivePatches(); // 1) causes strange crash to desktop without error log. 2) not efficient base replacement for PostApplyDamage 
-			Region_Patch.RunDestructivePatches();
-			ReservationManager_Patch.RunDestructivePatches();
-			Room_Patch.RunDestructivePatches();
-			SituationalThoughtHandler_Patch.RunDestructivePatches(); //TODO replace cachedThoughts with ThreadSafeLinkedList
-			ThingOwnerUtility_Patch.RunDestructivePatches(); //TODO fix method reference by index
+			Safe(AttackTargetReservationManager_Patch.RunDestructivePatches, "AttackTargetReservationManager_Patch.RunDestructivePatches");
+			Safe(BiomeDef_Patch.RunDestructivePatches, "BiomeDef_Patch.RunDestructivePatches");
+			Safe(FloodFiller_Patch.RunDestructivePatches, "FloodFiller_Patch.RunDestructivePatches");//FloodFiller - inefficient global lock - threadstatics might help do these concurrently?
+			Safe(JobQueue_Patch.RunDestructivePatches, "JobQueue_Patch.RunDestructivePatches");
+			Safe(MapPawns_Patch.RunDestructivePatches, "MapPawns_Patch.RunDestructivePatches"); //TODO: Affects Animal Master Assignment
+			Safe(MeditationFocusTypeAvailabilityCache_Patch.RunDestructivePatches, "MeditationFocusTypeAvailabilityCache_Patch.RunDestructivePatches");
+			Safe(Pawn_JobTracker_Patch.RunDestructivePatches, "Pawn_JobTracker_Patch.RunDestructivePatches");
+			Safe(Pawn_Patch.RunDestructivePatches, "Pawn_Patch.RunDestructivePatches"); // 1) causes strange crash to desktop without error log. 2) not efficient base replacement for PostApplyDamage 
+			Safe(Region_Patch.RunDestructivePatches, "Region_Patch.RunDestructivePatches");
+			Safe(ReservationManager_Patch.RunDestructivePatches, "ReservationManager_Patch.RunDestructivePatches");
+			Safe(Room_Patch.RunDestructivePatches, "Room_Patch.RunDestructivePatches");
+			Safe(SituationalThoughtHandler_Patch.RunDestructivePatches, "SituationalThoughtHandler_Patch.RunDestructivePatches"); //TODO replace cachedThoughts with ThreadSafeLinkedList
+			Safe(ThingOwnerUtility_Patch.RunDestructivePatches, "ThingOwnerUtility_Patch.RunDestructivePatches"); //TODO fix method reference by index
 			
 			
 															 //-----SOUND-----
-			SampleSustainer_Patch.RunDestructivePatches(); // TryMakeAndPlay works better than set_cutoffFrequency, which seems buggy for echo pass filters
-			SoundSizeAggregator_Patch.RunDestructivePatches();
-			SoundStarter_Patch.RunDestructivePatches(); //disabling this patch stops sounds
-			SustainerManager_Patch.RunDestructivePatches();
+			Safe(SampleSustainer_Patch.RunDestructivePatches, "SampleSustainer_Patch.RunDestructivePatches"); // TryMakeAndPlay works better than set_cutoffFrequency, which seems buggy for echo pass filters
+			Safe(SoundSizeAggregator_Patch.RunDestructivePatches, "SoundSizeAggregator_Patch.RunDestructivePatches");
+			Safe(SoundStarter_Patch.RunDestructivePatches, "SoundStarter_Patch.RunDestructivePatches"); //disabling this patch stops sounds
+			Safe(SustainerManager_Patch.RunDestructivePatches, "SustainerManager_Patch.RunDestructivePatches");
 															//-----END SOUND-----
 
-			Building_Bed_Patch.RunDestructivePatches();//this patch hides a race condition coming from Room.Map
-			RitualObligationTargetWorker_AnyEmptyGrave_Patch.RunDestructivePatches();
-			RitualObligationTargetWorker_GraveWithTarget_Patch.RunDestructivePatches();
-			PortraitsCache_Patch.RunDestructivePatches();
-			RegionLinkDatabase_Patch.RunDestructivePatches();
+			Safe(Building_Bed_Patch.RunDestructivePatches, "Building_Bed_Patch.RunDestructivePatches");//this patch hides a race condition coming from Room.Map
+			Safe(RitualObligationTargetWorker_AnyEmptyGrave_Patch.RunDestructivePatches, "RitualObligationTargetWorker_AnyEmptyGrave_Patch.RunDestructivePatches");
+			Safe(RitualObligationTargetWorker_GraveWithTarget_Patch.RunDestructivePatches, "RitualObligationTargetWorker_GraveWithTarget_Patch.RunDestructivePatches");
+			Safe(PortraitsCache_Patch.RunDestructivePatches, "PortraitsCache_Patch.RunDestructivePatches");
+			Safe(RegionLinkDatabase_Patch.RunDestructivePatches, "RegionLinkDatabase_Patch.RunDestructivePatches");
 			//RestUtility_Patch.RunDestructivePatches(); // find bed optimization
-			StatWorker_Patch.RunDestructivePatches();
-			BodyDef_Patch.RunDestructivePatches();
-			SubSoundDef_Patch.RunDestructivePatches();
+			Safe(StatWorker_Patch.RunDestructivePatches, "StatWorker_Patch.RunDestructivePatches");
+			Safe(BodyDef_Patch.RunDestructivePatches, "BodyDef_Patch.RunDestructivePatches");
+			Safe(SubSoundDef_Patch.RunDestructivePatches, "SubSoundDef_Patch.RunDestructivePatches");
         }
 
         private static void PatchModCompatibility()
 		{
-			AndroidTiers_Patch.Patch();
-			AwesomeInventory_Patch.Patch();
-			Children_Patch.Patch();
-			CombatExteneded_Patch.Patch();
-			Dubs_Skylight_Patch.Patch();
-			GiddyUpCore_Patch.Patch();
-			Hospitality_Patch.Patch();
-			JobsOfOppurtunity_Patch.Patch();
-			MapReroll_Patch.Patch();
-			PawnRules_Patch.Patch();
-			ZombieLand_Patch.Patch();
-			VEE_Patch.Patch();
-			SOS2_Patch.Patch();
-			SpeakUp_Patch.Patch();
-			RimWar_Patch.Patch();
-			TD_Enhancement_Patch.Patch();
-			Fluffy_Breakdowns_Patch.Patch();
-			Better_Message_Placement_Patch.Patch();
-			TurnItOnAndOff_Patch.Patch();
-			AlienRace_Patch.Patch();
-			DubsBadHygiene_Patch.Patch();
+			Safe(AndroidTiers_Patch.Patch, "AndroidTiers_Patch.Patch");
+			Safe(AwesomeInventory_Patch.Patch, "AwesomeInventory_Patch.Patch");
+			Safe(Children_Patch.Patch, "Children_Patch.Patch");
+			Safe(CombatExteneded_Patch.Patch, "CombatExteneded_Patch.Patch");
+			Safe(Dubs_Skylight_Patch.Patch, "Dubs_Skylight_Patch.Patch");
+			Safe(GiddyUpCore_Patch.Patch, "GiddyUpCore_Patch.Patch");
+			Safe(Hospitality_Patch.Patch, "Hospitality_Patch.Patch");
+			Safe(JobsOfOppurtunity_Patch.Patch, "JobsOfOppurtunity_Patch.Patch");
+			Safe(MapReroll_Patch.Patch, "MapReroll_Patch.Patch");
+			Safe(PawnRules_Patch.Patch, "PawnRules_Patch.Patch");
+			Safe(ZombieLand_Patch.Patch, "ZombieLand_Patch.Patch");
+			Safe(VEE_Patch.Patch, "VEE_Patch.Patch");
+			Safe(SOS2_Patch.Patch, "SOS2_Patch.Patch");
+			Safe(SpeakUp_Patch.Patch, "SpeakUp_Patch.Patch");
+			Safe(RimWar_Patch.Patch, "RimWar_Patch.Patch");
+			Safe(TD_Enhancement_Patch.Patch, "TD_Enhancement_Patch.Patch");
+			Safe(Fluffy_Breakdowns_Patch.Patch, "Fluffy_Breakdowns_Patch.Patch");
+			Safe(Better_Message_Placement_Patch.Patch, "Better_Message_Placement_Patch.Patch");
+			Safe(TurnItOnAndOff_Patch.Patch, "TurnItOnAndOff_Patch.Patch");
+			Safe(AlienRace_Patch.Patch, "AlienRace_Patch.Patch");
+			Safe(DubsBadHygiene_Patch.Patch, "DubsBadHygiene_Patch.Patch");
 		}
 		private static void FullPool_Patch_RunNonDestructivePatches()
 		{

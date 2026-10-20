@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using UnityEngine;
 using static RimThreaded.RimThreaded;
 using static System.Threading.Thread;
@@ -33,12 +33,16 @@ namespace RimThreaded.RW_Patches
                     typeof(GUIContent)
                 }));
 
+        private static readonly Func<object[], object> FuncCalcHeight2 = p => FuncCalcHeight((GUIStyle)p[0], (GUIContent)p[1], (float)p[2]);
+
         public static bool CalcHeight(GUIStyle __instance, ref float __result, GUIContent content, float width)
         {
             if (!CurrentThread.IsBackground || !allWorkerThreads.TryGetValue(CurrentThread, out ThreadInfo threadInfo))
                 return true;
             //Func<object[], object> FuncCalcHeight = p => __instance.CalcHeight((GUIContent)p[0], (float)p[1]);
-            threadInfo.safeFunctionRequest = new object[] { FuncCalcHeight, new object[] { __instance, content, width } };
+            // 1.6 port: the dispatcher only runs Func<object[], object> / Action<object[]>; the typed delegate used here was rejected
+            // ("not an action or function") and the (float) unbox of the missing result threw on the worker.
+            threadInfo.safeFunctionRequest = new object[] { FuncCalcHeight2, new object[] { __instance, content, width } };
             mainThreadWaitHandle.Set();
             threadInfo.eventWaitStart.WaitOne();
             __result = (float)threadInfo.safeFunctionResult;

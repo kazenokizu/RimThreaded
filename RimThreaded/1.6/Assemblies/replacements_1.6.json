@@ -923,7 +923,8 @@
       "ThreadStatics": [
         {
           "FieldName": "wantedPlantDef",
-          "PatchedClassName": "RimThreaded.RW_Patches.WorkGiver_Grower_Patch"
+          "PatchedClassName": "RimThreaded.RW_Patches.WorkGiver_Grower_Patch",
+          "SelfInitialized": true
         }
       ]
     },

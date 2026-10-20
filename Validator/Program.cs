@@ -73,10 +73,98 @@ public static class Program
         }
         Console.WriteLine("hooked " + hooked + " registration methods");
 
+        Console.WriteLine("phase: recording hooks");
+        // 3b. record every Harmony.Patch call the mod makes, including ones whose final JIT fails here (Unity ECall targets):
+        //     those never reach Harmony.GetPatchInfo, so the signature and dropped-parameter checks used to skip them.
+        foreach (MethodInfo pm in typeof(Harmony).GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.Name == "Patch"))
+        {
+            try { h.Patch(pm, prefix: new HarmonyMethod(typeof(Program), nameof(RecordPatch))); }
+            catch (Exception e) { Console.WriteLine("record hook failed " + pm + ": " + e.Message); }
+        }
+        // 3c. record reflection lookups made from mod code that return null (a null MethodInfo fed to CreateDelegate killed startup in-game)
+        int lookupHooks = 0;
+        foreach (MethodInfo am in typeof(AccessTools).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(m => !m.IsGenericMethodDefinition && LookupNames.Contains(m.Name) && typeof(MemberInfo).IsAssignableFrom(m.ReturnType)))
+        {
+            try { h.Patch(am, postfix: new HarmonyMethod(typeof(Program), nameof(RecordNullLookup))); lookupHooks++; }
+            catch (Exception e) { Console.WriteLine("lookup hook failed " + am + ": " + e.Message); }
+        }
+        Console.WriteLine("hooked " + lookupHooks + " reflection lookup methods");
+
+        // 3d. check every Delegate.CreateDelegate the mod makes against the target's real signature (return type included). For Unity ECall
+        //     targets CoreCLR refuses to bind at all, so a stand-in delegate is returned to let the rest of the static initializer run.
+        foreach (MethodInfo cd in typeof(Delegate).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(m => m.Name == "CreateDelegate" && m.GetParameters().Any(p => p.ParameterType == typeof(MethodInfo))))
+        {
+            try { h.Patch(cd, prefix: new HarmonyMethod(typeof(Program), nameof(CheckCreateDelegate))); Console.WriteLine("delegate hook " + cd); }
+            catch (Exception e) { Console.WriteLine("delegate hook failed " + cd + ": " + e.Message); }
+        }
         Console.WriteLine("phase: cctor");
         // 4. run the real static constructor: LoadFieldReplacements, ApplyFieldReplacements, all patches
         try { System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(rth.TypeHandle); }
         catch (Exception e) { Failures.Add("CCTOR " + Unwrap(e)); }
+
+        Console.WriteLine("phase: all static initializers");
+        Type modClass = mod.GetType("RimThreaded.RimThreadedMod");
+        AccessTools.Field(modClass, "Settings").SetValue(null, Activator.CreateInstance(mod.GetType("RimThreaded.RimThreadedSettings")));
+        // 4b. Mono runs a beforefieldinit type's static initializers when one of its methods is first called; CoreCLR only when a static
+        //     field is first read. So Texture2D_Patch's initializers ran (and threw) in the game but never here. Run every one explicitly.
+        //     RimThreaded.RimThreaded runs too (it is what the game calls), with worker/monitor thread start-up stubbed out.
+        Type rtMain = mod.GetType("RimThreaded.RimThreaded");
+        h.Patch(AccessTools.Method(rtMain, "CreateWorkerThreads"), prefix: new HarmonyMethod(typeof(Program), nameof(SkipCctor)));
+        h.Patch(AccessTools.Method(rtMain, "MonitorThreads"), prefix: new HarmonyMethod(typeof(Program), nameof(SkipCctor)));
+        if (Environment.GetEnvironmentVariable("TRACE_CTOR") is string traceCtor && traceCtor.Length > 0)
+        {
+            Type tt = game.GetType(traceCtor) ?? AccessTools.TypeByName(traceCtor);
+            h.Patch(AccessTools.Constructor(tt, Type.EmptyTypes), prefix: new HarmonyMethod(typeof(Program), nameof(TraceCtor)));
+        }
+        int initRan = 0;
+        foreach (Type t in SafeTypes(mod).Where(t => !t.ContainsGenericParameters).OrderBy(t => t.FullName))
+        {
+            try { System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(t.TypeHandle); initRan++; }
+            catch (Exception e)
+            {
+                string chain = "";
+                for (Exception x = e; x != null; x = x.InnerException)
+                {
+                    string tr; try { tr = x.StackTrace ?? ""; } catch (Exception) { tr = "?"; }
+                    chain += " || " + x.GetType().Name + ": " + string.Join(" | ", tr.Split('\n').Take(8).Select(l => l.Trim()));
+                }
+                Failures.Add("STATIC INIT " + t.FullName + " -> " + Unwrap(e, 14));
+                File.AppendAllText("/tmp/validator_static_init_chains.txt", t.FullName + chain + "\n");
+            }
+        }
+        Console.WriteLine("ran static initializers of " + initRan + " mod types");
+        Assembly genAsm = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().Name == "RimThreadedReplacements");
+        // Every thread-static initializer, one by one (in the game they run as one chain, so the first exception would hide the rest).
+        // CoreCLR enforces member access from the generated (dynamic) assembly to private vanilla types; Mono does not, and the same
+        // entries (e.g. GrammarResolver.rules) ran on Mono in 1.3/1.4. Those are counted separately.
+        {
+            var initMethods = SafeTypes(mod).Concat(genAsm != null ? genAsm.GetTypes() : new Type[0])
+                .Where(t => !t.ContainsGenericParameters)
+                .Select(t => t.GetMethod("InitializeThreadStatics", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, Type.EmptyTypes, null))
+                .Where(m => m != null).ToList();
+            int ok = 0, access = 0;
+            foreach (MethodInfo im in initMethods)
+            {
+                try { im.Invoke(null, null); ok++; }
+                catch (TargetInvocationException e) when (e.InnerException is MethodAccessException || e.InnerException is FieldAccessException || e.InnerException is TypeAccessException)
+                { access++; Console.WriteLine("  access-blocked here (not on Mono): " + im.DeclaringType.Name + ": " + e.InnerException.Message.Split('\n')[0]); }
+                catch (Exception e) { Failures.Add("THREAD-STATIC INIT " + im.DeclaringType.FullName + " -> " + Unwrap(e)); }
+            }
+            Console.WriteLine("=== thread-static initializers run individually: " + initMethods.Count + ", ok " + ok + ", blocked by CoreCLR access checks " + access);
+        }
+        if (genAsm != null)
+        {
+            var genFields = genAsm.GetTypes().SelectMany(t => t.GetFields(BindingFlags.Public | BindingFlags.Static).Select(f => (t, f))).ToList();
+            var odd = genFields.Where(x => !x.f.FieldType.IsValueType && !System.Text.RegularExpressions.Regex.IsMatch(x.f.FieldType.FullName ?? "", @"^System\.Collections\.(Generic\.)?(List|Dictionary|HashSet|Queue|Stack|SortedList|LinkedList)`|^System\.Text\.StringBuilder")).ToList();
+            Console.WriteLine("=== generated thread-static fields: " + genFields.Count + "; not plain collections: " + odd.Count);
+            // RimThreaded's static constructor ran InitializeAllThreadStatics on this thread: every constructible field must now hold an object
+            var unset = genFields.Where(x => !x.f.FieldType.IsValueType && x.f.FieldType.GetConstructor(Type.EmptyTypes) != null && x.f.GetValue(null) == null).ToList();
+            Console.WriteLine("=== generated thread-static fields still null on the initializing thread: " + unset.Count + " (expected: only SelfInitialized entries)");
+            foreach (var x in unset) Console.WriteLine("  " + x.t.Name + "." + x.f.Name);
+            foreach (var x in odd) Console.WriteLine("  " + x.t.Name + "." + x.f.Name + " : " + x.f.FieldType.FullName?.Split(',')[0]);
+        }
 
         if (args.Length > 2 && args[1] == "identity")
         {
@@ -171,7 +259,9 @@ public static class Program
         JsonFieldCheck(game, mod, Path.Combine(asmDir, "replacements_1.6.json"));
         // Harmony 2.3.3 on CoreCLR rejects even a do-nothing transpiler on many compiler-generated iterators (identity-scan: 84 of 151
         // untouched game iterators fail), so an InvalidProgramException on a ">d__" MoveNext says nothing about the mod's own transpiler.
-        bool Unverifiable(string x) => x.Contains("ECall methods must be packaged") || (x.Contains(">d__") && x.Contains("InvalidProgramException"));
+        bool Unverifiable(string x) => x.Contains("ECall methods must be packaged") || (x.Contains(">d__") && x.Contains("InvalidProgramException"))
+            || (x.StartsWith("STATIC INIT RimThreaded.RimThreaded ") && x.Contains("MethodAccessException") && x.Contains("_Replacement.InitializeThreadStatics"));
+        File.WriteAllLines("/tmp/validator_failures_full.txt", GameErrors.Concat(Failures));
         var ecall = GameErrors.Concat(Failures).Where(Unverifiable).ToList();
         var real = GameErrors.Concat(Failures).Where(x => !Unverifiable(x)).Distinct().ToList();
         Console.WriteLine("=== REAL failures: " + real.Count);
@@ -184,6 +274,13 @@ public static class Program
         NoOpTranspilerCheck(patched);
         if (Environment.GetEnvironmentVariable("DRIFT") == "1") DriftCheck(patched);
         DroppedParamCheck(patched);
+        var unityTargets = Recorded.Where(r => r.original.DeclaringType?.Assembly.GetName().Name != "Assembly-CSharp").Select(r => r.original.DeclaringType?.FullName + "." + r.original.Name + "(" + string.Join(",", r.original.GetParameters().Select(x => x.ParameterType.Name)) + ") <- " + r.kind + " " + Name(r.patch)).Distinct().OrderBy(x => x).ToList();
+        Console.WriteLine("=== patches on methods outside Assembly-CSharp (Unity/.NET): " + unityTargets.Count);
+        foreach (string u in unityTargets) Console.WriteLine("  " + u);
+        Console.WriteLine("=== delegate bindings checked: " + DelegatesChecked + ", signature mismatches or null targets: " + DelegateProblems.Distinct().Count());
+        foreach (string s in DelegateProblems.Distinct().OrderBy(x => x)) Console.WriteLine("  " + s);
+        Console.WriteLine("=== reflection lookups from mod code that returned null: " + NullLookups.Distinct().Count());
+        foreach (string s in NullLookups.Distinct().OrderBy(x => x)) Console.WriteLine("  " + s);
         LockCoverageCheck(game);
         UnsetResultCheck(patched);
         Console.WriteLine("=== patched iterator/closure methods: " + string.Join(", ", patched.Where(m => m.DeclaringType.Name.Contains(">d__")).Select(m => m.DeclaringType.DeclaringType?.Name + "." + m.DeclaringType.Name)));
@@ -191,21 +288,36 @@ public static class Program
     }
 
     // Harmony does not check that prefix/postfix parameter types agree with the original; the JIT only catches some mismatches.
-    static void SignatureCheck(List<MethodBase> patched)
+    // Every rimthreaded prefix/postfix: the installed ones (Harmony patch info) plus the ones Harmony could not finish installing in this
+    // harness (Unity ECall targets), taken from the recorded Harmony.Patch calls.
+    static List<(MethodBase original, MethodInfo pm, bool prefix, bool installed)> RtPatchPairs(List<MethodBase> patched)
     {
-        int checkedPatches = 0; var problems = new List<string>();
+        var pairs = new List<(MethodBase, MethodInfo, bool, bool)>();
+        var seen = new HashSet<(MethodBase, MethodInfo)>();
         foreach (MethodBase original in patched)
         {
             Patches info = Harmony.GetPatchInfo(original);
             if (info == null) continue;
+            foreach (Patch p in info.Prefixes.Where(x => x.owner == "majorhoff.rimthreaded")) if (seen.Add((original, p.PatchMethod))) pairs.Add((original, p.PatchMethod, true, true));
+            foreach (Patch p in info.Postfixes.Where(x => x.owner == "majorhoff.rimthreaded")) if (seen.Add((original, p.PatchMethod))) pairs.Add((original, p.PatchMethod, false, true));
+        }
+        foreach (var r in Recorded.Where(r => r.kind == "prefix" || r.kind == "postfix"))
+            if (seen.Add((r.original, r.patch))) pairs.Add((r.original, r.patch, r.kind == "prefix", false));
+        return pairs;
+    }
+
+    static void SignatureCheck(List<MethodBase> patched)
+    {
+        int checkedPatches = 0; var problems = new List<string>();
+        var pairs = RtPatchPairs(patched);
+        foreach (var pair in pairs)
+        {
+            MethodBase original = pair.original;
             var ops = original.GetParameters();
-            foreach (var group in new[] { info.Prefixes, info.Postfixes })
             {
-                foreach (Patch patch in group)
                 {
-                    if (patch.owner != "majorhoff.rimthreaded") continue;
                     checkedPatches++;
-                    MethodInfo pm = patch.PatchMethod;
+                    MethodInfo pm = pair.pm;
                     foreach (ParameterInfo pp in pm.GetParameters())
                     {
                         string n = pp.Name;
@@ -238,7 +350,7 @@ public static class Program
                 }
             }
         }
-        Console.WriteLine("=== signature check: " + checkedPatches + " rimthreaded prefix/postfix patches checked, problems: " + problems.Count);
+        Console.WriteLine("=== signature check: " + checkedPatches + " rimthreaded prefix/postfix patches checked (" + pairs.Count(p => !p.installed) + " of them not installable in this harness, checked from the recorded Patch call), problems: " + problems.Count);
         foreach (string s in problems.Distinct()) Console.WriteLine("  " + s);
     }
     // Every PatchedClassName entry swaps a vanilla static for a field in a mod class; the types must be identical or the transpiled IL is wrong.
@@ -268,9 +380,32 @@ public static class Program
                 }
                 else if (vf.FieldType.GetConstructor(Type.EmptyTypes) == null && !vf.FieldType.IsValueType)
                     GameErrors.Add("JSON field type has no parameterless constructor (stays null on worker threads): " + cn + "." + fn + " : " + vf.FieldType);
+                else if (!(f.TryGetProperty("SelfInitialized", out var si) && si.GetBoolean()) && !vf.FieldType.IsValueType)
+                    PerThreadConstructed.Add(vf.FieldType.FullName + "  <- " + cn + "." + fn);
+                bool selfInit = f.TryGetProperty("SelfInitialized", out var si2) && si2.GetBoolean();
+                if (!selfInit && !vf.FieldType.IsValueType && vf.FieldType.GetConstructor(Type.EmptyTypes) != null)
+                {
+                    // RimThreaded gives each thread "new T()" for this field. Vanilla must also start it as a new object, or code that
+                    // tests it for null changes behaviour (a blank object instead of null).
+                    bool vanillaNews = false;
+                    var inits = vf.IsStatic ? new MethodBase[] { t.TypeInitializer } : t.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    foreach (MethodBase init in inits.Where(x => x != null))
+                    {
+                        var ci = PatchProcessor.GetOriginalInstructions(init).ToList();
+                        for (int i = 1; i < ci.Count; i++)
+                            if ((ci[i].opcode == OpCodes.Stsfld || ci[i].opcode == OpCodes.Stfld) && Equals(ci[i].operand, vf) && ci[i - 1].opcode == OpCodes.Newobj) vanillaNews = true;
+                    }
+                    if (!vanillaNews) StartsNullInVanilla.Add(cn + "." + fn + " : " + vf.FieldType.Name);
+                }
             }
         }
         Console.WriteLine("=== JSON field check: " + checkedFields + " fields examined");
+        // every worker thread runs these constructors when it starts: anything that is not a plain collection/value holder is listed
+        var unusual = PerThreadConstructed.Where(x => !System.Text.RegularExpressions.Regex.IsMatch(x, @"^System\.Collections\.(Generic\.)?(List|Dictionary|HashSet|Queue|Stack|SortedList|LinkedList)`|^System\.Text\.StringBuilder|^System\.Object ")).Distinct().OrderBy(x => x).ToList();
+        Console.WriteLine("=== thread-static fields RimThreaded constructs per thread that vanilla does not initialize with new (starts null or set elsewhere): " + StartsNullInVanilla.Count);
+        foreach (string u in StartsNullInVanilla.OrderBy(x => x)) Console.WriteLine("  " + u);
+        Console.WriteLine("=== thread-static fields constructed per thread whose type is not a plain collection: " + unusual.Count);
+        foreach (string u in unusual) Console.WriteLine("  " + u);
     }
 
     // A transpiler whose IL pattern no longer exists in 1.6 silently changes nothing. Compare the method body before and after.
@@ -350,12 +485,10 @@ public static class Program
     static void DroppedParamCheck(List<MethodBase> patched)
     {
         var rows = new List<string>();
-        foreach (MethodBase original in patched)
+        foreach (var pair in RtPatchPairs(patched).Where(p => p.prefix))
         {
-            Patches info = Harmony.GetPatchInfo(original);
-            if (info == null) continue;
-            int origCount = original.GetParameters().Length;
-            foreach (var pre in info.Prefixes.Where(x => x.PatchMethod.DeclaringType.Assembly.GetName().Name == "RimThreaded"))
+            MethodBase original = pair.original;
+            var pre = new { PatchMethod = pair.pm };
             {
                 var ins = PatchProcessor.GetOriginalInstructions(pre.PatchMethod).ToList();
                 bool skips = false;
@@ -363,6 +496,7 @@ public static class Program
                 if (!skips) continue;
                 var names = original.GetParameters().Select(x => x.Name).ToHashSet();
                 var pnames = pre.PatchMethod.GetParameters().Select(x => x.Name).ToHashSet();
+                if (pnames.Contains("__args")) continue;   // receives every argument
                 var dropped = names.Where(n => !pnames.Contains(n)).ToList();
                 if (dropped.Count > 0) rows.Add(Name(original) + " <- " + pre.PatchMethod.DeclaringType.Name + " drops: " + string.Join(",", dropped));
             }
@@ -373,6 +507,8 @@ public static class Program
 
 
     public static bool SkipCctor() => false;
+    static int traced;
+    public static void TraceCtor(MethodBase __originalMethod) { if (traced++ < 3) Console.WriteLine("TRACE " + __originalMethod.DeclaringType + " ctor:\n" + new System.Diagnostics.StackTrace(1, false)); }
 
     // Functional check of WrapMethodInInstanceLock on a real 1.6 method: it must wait for a monitor held by another thread and keep the return value.
     static void LockCoverageCheck(Assembly game)
@@ -413,16 +549,22 @@ public static class Program
     {
         var rows = new List<string>();
         var seenPatches = new HashSet<MethodInfo>();
-        foreach (MethodBase original in patched)
+        foreach (var pair in RtPatchPairs(patched).Where(p => p.prefix))
         {
-            Patches info = Harmony.GetPatchInfo(original);
-            if (info == null) continue;
-            foreach (var pre in info.Prefixes.Where(x => x.PatchMethod.DeclaringType.Assembly.GetName().Name == "RimThreaded"))
+            MethodBase original = pair.original;
             {
-                MethodInfo pm = pre.PatchMethod;
+                MethodInfo pm = pair.pm;
                 if (!seenPatches.Add(pm) || pm.ReturnType != typeof(bool)) continue;
                 ParameterInfo resultParam = pm.GetParameters().FirstOrDefault(x => x.Name == "__result" && x.ParameterType.IsByRef);
-                if (resultParam == null) continue;
+                Type origReturn = (original as MethodInfo)?.ReturnType ?? typeof(void);
+                if (resultParam == null)
+                {
+                    // a prefix that can skip a non-void original but has no __result at all: the caller always gets default(T)
+                    var body = PatchProcessor.GetOriginalInstructions(pm).ToList();
+                    bool canSkip = Enumerable.Range(0, Math.Max(0, body.Count - 1)).Any(i => body[i].opcode == OpCodes.Ldc_I4_0 && body[i + 1].opcode == OpCodes.Ret);
+                    if (canSkip && origReturn != typeof(void)) rows.Add(Name(original) + " <- " + Name(pm) + ": skips a " + origReturn.Name + "-returning original with no __result parameter");
+                    continue;
+                }
                 int argIndex = resultParam.Position + (pm.IsStatic ? 0 : 1);
                 var ins = PatchProcessor.GetOriginalInstructions(pm).ToList();
                 var labelAt = new Dictionary<Label, int>();
@@ -478,12 +620,15 @@ public static class Program
         catch (ReflectionTypeLoadException e) { return e.Types.Where(t => t != null); }
     }
 
-    static string Unwrap(Exception e)
+    static string Unwrap(Exception e) => Unwrap(e, 3);
+    static string Unwrap(Exception e, int frames)
     {
         while ((e is TargetInvocationException || e is TypeInitializationException) && e.InnerException != null) e = e.InnerException;
         string s = e.GetType().Name + ": " + e.Message;
-        string[] lines = (e.StackTrace ?? "").Split('\n');
-        return s + " @ " + string.Join(" | ", lines.Take(3).Select(l => l.Trim()));
+        string trace;
+        try { trace = e.StackTrace ?? ""; } catch (Exception) { trace = "(stack trace unavailable: frame in a Unity module not present here)"; }
+        string[] lines = trace.Split('\n');
+        return s + " @ " + string.Join(" | ", lines.Take(frames).Select(l => l.Trim()));
     }
 
     public static bool LogPrefix(MethodBase __originalMethod, object[] __args)
@@ -495,6 +640,84 @@ public static class Program
             else if (__originalMethod.Name.StartsWith("Warning")) GameWarnings.Add(text);
         }
         return false;
+    }
+
+    public static readonly List<(MethodBase original, MethodInfo patch, string kind)> Recorded = new List<(MethodBase, MethodInfo, string)>();
+    public static readonly List<string> NullLookups = new List<string>();
+    public static readonly List<string> PerThreadConstructed = new List<string>();
+    public static readonly List<string> StartsNullInVanilla = new List<string>();
+    static readonly HashSet<string> LookupNames = new HashSet<string> { "Method", "DeclaredMethod", "Field", "DeclaredField", "Constructor",
+        "DeclaredConstructor", "Property", "DeclaredProperty", "PropertyGetter", "PropertySetter", "DeclaredPropertyGetter",
+        "DeclaredPropertySetter", "TypeByName", "Inner", "FirstMethod", "FirstConstructor", "FirstProperty", "FirstInner" };
+
+    public static void RecordPatch(Harmony __instance, MethodBase __originalMethod, object[] __args)
+    {
+        if (__instance.Id != "majorhoff.rimthreaded" || __args == null || __args.Length == 0 || !(__args[0] is MethodBase original)) return;
+        ParameterInfo[] ps = __originalMethod.GetParameters();
+        for (int i = 1; i < __args.Length && i < ps.Length; i++)
+            if (__args[i] is HarmonyMethod hm && hm.method != null)
+                lock (gate) Recorded.Add((original, hm.method, ps[i].Name));
+    }
+
+    public static void RecordNullLookup(object __result, MethodBase __originalMethod, object[] __args)
+    {
+        if (__result != null) return;
+        foreach (var f in new System.Diagnostics.StackTrace(1, false).GetFrames())
+        {
+            MethodBase m = f.GetMethod();
+            string an = m?.DeclaringType?.Assembly.GetName().Name;
+            if (an == null || an == "Validator" || an.StartsWith("System")) continue;
+            if (an != "RimThreaded") return;
+            string Fmt(object a) => a is Type t ? t.FullName : a is Type[] ts ? "[" + string.Join(",", ts.Select(x => x?.Name)) + "]" : a is string s ? "\"" + s + "\"" : a?.ToString() ?? "null";
+            lock (gate) NullLookups.Add(Name(m) + ": AccessTools." + __originalMethod.Name + "(" + string.Join(", ", (__args ?? new object[0]).Select(Fmt)) + ")");
+            return;
+        }
+    }
+
+    public static readonly List<string> DelegateProblems = new List<string>();
+    public static int DelegatesChecked;
+    static string CallerInMod()
+    {
+        foreach (var f in new System.Diagnostics.StackTrace(2, false).GetFrames())
+        {
+            MethodBase m = f.GetMethod();
+            string an = m?.DeclaringType?.Assembly.GetName().Name;
+            if (an == null || an == "Validator" || an.StartsWith("System")) continue;
+            return an == "RimThreaded" ? Name(m) : null;   // first non-runtime frame must be mod code (Harmony's own bindings are not the mod's)
+        }
+        return null;
+    }
+    public static bool CheckCreateDelegate(ref Delegate __result, object[] __args)
+    {
+        Type dt = __args.OfType<Type>().FirstOrDefault();
+        MethodInfo target = __args.OfType<MethodInfo>().FirstOrDefault();
+        bool hasFirstArg = __args.Length >= 4 || (__args.Length == 3 && !(__args[2] is bool));
+        string caller = CallerInMod();
+        if (caller == null || dt == null) return true;
+        lock (gate) DelegatesChecked++;
+        if (target == null) { lock (gate) DelegateProblems.Add(caller + ": CreateDelegate(" + dt.Name + ") with a null method"); return true; }
+        MethodInfo inv = dt.GetMethod("Invoke");
+        var dps = inv.GetParameters().Select(p => p.ParameterType).ToList();
+        var tps = target.GetParameters().Select(p => p.ParameterType).ToList();
+        if (!target.IsStatic && !hasFirstArg) tps.Insert(0, target.DeclaringType);
+        bool paramsOk = dps.Count == tps.Count && dps.Zip(tps).All(x => x.First == x.Second || (!x.First.IsValueType && x.First.IsAssignableFrom(x.Second)) || (!x.Second.IsValueType && x.Second.IsAssignableFrom(x.First)));
+        bool retOk = inv.ReturnType == target.ReturnType || (!target.ReturnType.IsValueType && inv.ReturnType.IsAssignableFrom(target.ReturnType));
+        if (!paramsOk || !retOk)
+            lock (gate) DelegateProblems.Add(caller + ": " + dt.Name + "<" + string.Join(",", dps.Select(x => x.Name)) + "→" + inv.ReturnType.Name + "> vs " + target.DeclaringType?.Name + "." + target.Name + "(" + string.Join(",", tps.Select(x => x.Name)) + ")→" + target.ReturnType.Name);
+        if ((target.GetMethodImplementationFlags() & MethodImplAttributes.InternalCall) != 0)
+        {
+            // stand-in with the right type so the initializer can continue; never invoked in the harness
+            __result = (Delegate)typeof(Program).GetMethod(nameof(StandIn), BindingFlags.NonPublic | BindingFlags.Static).MakeGenericMethod(dt).Invoke(null, null);
+            return false;
+        }
+        return true;
+    }
+    static Delegate StandIn<T>()
+    {
+        MethodInfo inv = typeof(T).GetMethod("Invoke");
+        var ps = inv.GetParameters().Select(p => System.Linq.Expressions.Expression.Parameter(p.ParameterType)).ToArray();
+        var body = inv.ReturnType == typeof(void) ? (System.Linq.Expressions.Expression)System.Linq.Expressions.Expression.Empty() : System.Linq.Expressions.Expression.Default(inv.ReturnType);
+        return System.Linq.Expressions.Expression.Lambda(typeof(T), body, ps).Compile();
     }
 
     public static Exception Finalizer(Exception __exception, MethodBase __originalMethod, object[] __args)

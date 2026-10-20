@@ -8,5 +8,6 @@ cp "$ROOT"/Dependencies/1.6/*.dll "$ROOT/Validator/run/"
 cp "$ROOT"/RimThreaded/1.6/Assemblies/* "$ROOT/Validator/run/"
 (cd "$ROOT/Validator" && dotnet build -c Release 2>&1 | grep -E " error " || true)
 cd "$ROOT/Validator/bin/Release/net8.0"
-dotnet Validator.dll "$ROOT/Validator/run" > /tmp/validator_out.txt 2>&1 || true
+dotnet Validator.dll "$ROOT/Validator/run" "$@" > /tmp/validator_out.txt 2>&1 || true
 grep -v "^hook\|^phase\|^start" /tmp/validator_out.txt
+python3 "$ROOT/Validator/scan_dispatch.py" "$ROOT/Source"

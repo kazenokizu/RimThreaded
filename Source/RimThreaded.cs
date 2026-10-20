@@ -90,7 +90,16 @@ namespace RimThreaded
         }
         static RimThreaded()
         {
-            RimThreadedHarmony rtHarmony = new RimThreadedHarmony();
+            // 1.6 port: if patching throws, the thread-static fields that the already-applied field replacements point at must still be
+            // initialized on this (main) thread, or vanilla code reading them throws NullReferenceException every frame.
+            try
+            {
+                RimThreadedHarmony rtHarmony = new RimThreadedHarmony();
+            }
+            catch (Exception e)
+            {
+                Log.Error("RimThreaded: patching aborted: " + e);
+            }
             InitializeAllThreadStatics();
             CreateWorkerThreads();
             monitorThread = new Thread(MonitorThreads) { IsBackground = true };
@@ -196,30 +205,51 @@ namespace RimThreaded
             InitializeAllThreadStatics();
             ProcessTicks(ti);
         }
+        static readonly HashSet<string> reportedThreadStaticFailures = new HashSet<string>();
+
+        // One failing initializer must not leave the others unset on this thread.
+        static void InitThreadStatic(Action init, string name)
+        {
+            try
+            {
+                init();
+            }
+            catch (Exception e)
+            {
+                lock (reportedThreadStaticFailures)
+                {
+                    if (!reportedThreadStaticFailures.Add(name))
+                        return;
+                }
+                Log.Error("RimThreaded: " + name + ".InitializeThreadStatics failed: " + e);
+            }
+        }
         public static void InitializeAllThreadStatics()
         {
-            CellFinder_Patch.InitializeThreadStatics();
-            ColoredText_Patch.InitializeThreadStatics();
-            CompCauseGameCondition_Patch.InitializeThreadStatics();
-            Dijkstra_Patch<IntVec3>.InitializeThreadStatics();
-            Dijkstra_Patch<Region>.InitializeThreadStatics();
-            Dijkstra_Patch<int>.InitializeThreadStatics();
-            HaulingCache.InitializeThreadStatics();
-            JumboCell.InitializeThreadStatics();
-            PawnTextureAtlas_Patch.InitializeThreadStatics();
-            Reachability_Patch.InitializeThreadStatics();
-            ReachabilityCache_Patch.InitializeThreadStatics();
-            Region_Patch.InitializeThreadStatics();
-            RegionAndRoomUpdater_Patch.InitializeThreadStatics();
-            RegionDirtyer_Patch.InitializeThreadStatics();
-            RegionTraverser_Patch.InitializeThreadStatics();
-            SustainerManager_Patch.InitializeThreadStatics();
-            Toils_Ingest_Patch.InitializeThreadStatics();
-            World_Patch.InitializeThreadStatics();
-            WorldPawns_Patch.InitializeThreadStatics();
-            AttackTargetReservationManager_Patch.InitializeThreadStatics();
-            ReservationManager_Patch.InitializeThreadStatics();
-            ListerThings_Patch.InitializeThreadStatics();
+            InitThreadStatic(CellFinder_Patch.InitializeThreadStatics, "CellFinder_Patch");
+            InitThreadStatic(ColoredText_Patch.InitializeThreadStatics, "ColoredText_Patch");
+            InitThreadStatic(CompCauseGameCondition_Patch.InitializeThreadStatics, "CompCauseGameCondition_Patch");
+            InitThreadStatic(Dijkstra_Patch<IntVec3>.InitializeThreadStatics, "Dijkstra_Patch<IntVec3>");
+            InitThreadStatic(Dijkstra_Patch<Region>.InitializeThreadStatics, "Dijkstra_Patch<Region>");
+            InitThreadStatic(Dijkstra_Patch<int>.InitializeThreadStatics, "Dijkstra_Patch<int>");
+            InitThreadStatic(HaulingCache.InitializeThreadStatics, "HaulingCache");
+            InitThreadStatic(JumboCell.InitializeThreadStatics, "JumboCell");
+            InitThreadStatic(PawnTextureAtlas_Patch.InitializeThreadStatics, "PawnTextureAtlas_Patch");
+            InitThreadStatic(Reachability_Patch.InitializeThreadStatics, "Reachability_Patch");
+            InitThreadStatic(ReachabilityCache_Patch.InitializeThreadStatics, "ReachabilityCache_Patch");
+            InitThreadStatic(Region_Patch.InitializeThreadStatics, "Region_Patch");
+            InitThreadStatic(RegionAndRoomUpdater_Patch.InitializeThreadStatics, "RegionAndRoomUpdater_Patch");
+            InitThreadStatic(RegionDirtyer_Patch.InitializeThreadStatics, "RegionDirtyer_Patch");
+            InitThreadStatic(RegionTraverser_Patch.InitializeThreadStatics, "RegionTraverser_Patch");
+            InitThreadStatic(SustainerManager_Patch.InitializeThreadStatics, "SustainerManager_Patch");
+            InitThreadStatic(Toils_Ingest_Patch.InitializeThreadStatics, "Toils_Ingest_Patch");
+            InitThreadStatic(World_Patch.InitializeThreadStatics, "World_Patch");
+            InitThreadStatic(WorldPawns_Patch.InitializeThreadStatics, "WorldPawns_Patch");
+            InitThreadStatic(AttackTargetReservationManager_Patch.InitializeThreadStatics, "AttackTargetReservationManager_Patch");
+            InitThreadStatic(ReservationManager_Patch.InitializeThreadStatics, "ReservationManager_Patch");
+            InitThreadStatic(ListerThings_Patch.InitializeThreadStatics, "ListerThings_Patch");
+            // thread-statics declared in replacements_1.6.json (formerly emitted IL attached as Harmony postfixes)
+            RimThreadedHarmony.InitializeGeneratedThreadStatics();
         }
         private static void ProcessTicks(ThreadInfo threadInfo)
         {
@@ -486,20 +516,33 @@ namespace RimThreaded
                 object[] functionAndParameters = threadInfo.safeFunctionRequest;
                 if (functionAndParameters == null) continue;
                 object[] parameters = (object[])functionAndParameters[1];
-                switch (functionAndParameters[0])
+                // 1.6 port: an exception here used to skip the Set() below, leaving the worker blocked forever (and the tick with it).
+                // The worker is now always released; it gets a null/default result and the error is logged.
+                try
                 {
-                    case Func<object[], object> safeFunction:
-                        threadInfo.safeFunctionResult = safeFunction(parameters);
-                        break;
-                    case Action<object[]> safeAction:
-                        safeAction(parameters);
-                        break;
-                    default:
-                        Log.Error("First parameter of thread-safe function request was not an action or function");
-                        break;
+                    switch (functionAndParameters[0])
+                    {
+                        case Func<object[], object> safeFunction:
+                            threadInfo.safeFunctionResult = safeFunction(parameters);
+                            break;
+                        case Action<object[]> safeAction:
+                            safeAction(parameters);
+                            break;
+                        default:
+                            Log.Error("First parameter of thread-safe function request was not an action or function");
+                            break;
+                    }
                 }
-                threadInfo.safeFunctionRequest = null;
-                threadInfo.eventWaitStart.Set();
+                catch (Exception e)
+                {
+                    threadInfo.safeFunctionResult = null;
+                    Log.Error("RimThreaded: main-thread call requested by a worker thread failed: " + e);
+                }
+                finally
+                {
+                    threadInfo.safeFunctionRequest = null;
+                    threadInfo.eventWaitStart.Set();
+                }
             }
         }
 

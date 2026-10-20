@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using UnityEngine;
 using Verse.Sound;
 using static RimThreaded.RimThreaded;
@@ -14,7 +14,8 @@ namespace RimThreaded.RW_Patches
             SampleSustainer.TryMakeAndPlay(
                 (SubSustainer)parameters[0],
                 (AudioClip)parameters[1],
-                (float)parameters[2]);
+                (float)parameters[2],
+                (float)parameters[3]);
 
         public static void RunDestructivePatches()
         {
@@ -23,11 +24,12 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Prefix(original, patched, "TryMakeAndPlay");
         }
 
-        public static bool TryMakeAndPlay(ref SampleSustainer __result, SubSustainer subSus, AudioClip clip, float scheduledEndTime)
+        // 1.6 added startTime (source.time is set to it before Play); the 1.4 copy dropped it, so dispatched sounds always restarted at 0.
+        public static bool TryMakeAndPlay(ref SampleSustainer __result, SubSustainer subSus, AudioClip clip, float scheduledEndTime, float startTime = 0f)
         {
             if (!CurrentThread.IsBackground || !allWorkerThreads.TryGetValue(CurrentThread, out ThreadInfo threadInfo))
                 return true;
-            threadInfo.safeFunctionRequest = new object[] { safeFunction, new object[] { subSus, clip, scheduledEndTime } };
+            threadInfo.safeFunctionRequest = new object[] { safeFunction, new object[] { subSus, clip, scheduledEndTime, startTime } };
             mainThreadWaitHandle.Set();
             threadInfo.eventWaitStart.WaitOne();
             __result = (SampleSustainer)threadInfo.safeFunctionResult;

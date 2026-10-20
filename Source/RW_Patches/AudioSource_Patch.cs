@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using UnityEngine;
 using static HarmonyLib.AccessTools;
@@ -20,11 +20,14 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Prefix(original, patched, nameof(Stop), Type.EmptyTypes);
         }
 
+        private static readonly Action<object[]> ActionAudioSourceStop2 = p => ActionAudioSourceStop((AudioSource)p[0]);
+
         public static bool Stop(AudioSource __instance)
         {
             if (!CurrentThread.IsBackground || !allWorkerThreads.TryGetValue(CurrentThread, out ThreadInfo threadInfo))
                 return true;
-            threadInfo.safeFunctionRequest = new object[] { ActionAudioSourceStop, new object[] { __instance } };
+            // 1.6 port: was the typed Action<AudioSource>, which the dispatcher rejects ("not an action or function"), so Stop never ran.
+            threadInfo.safeFunctionRequest = new object[] { ActionAudioSourceStop2, new object[] { __instance } };
             mainThreadWaitHandle.Set();
             threadInfo.eventWaitStart.WaitOne();
             return false;

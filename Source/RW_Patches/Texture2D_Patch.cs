@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using System;
 using System.Reflection;
@@ -35,27 +35,21 @@ namespace RimThreaded.RW_Patches
             __result = (Color)threadInfo.safeFunctionResult;
             return false;
         }
-        public static MethodInfo reflectionMethod = AccessTools.Method(typeof(Texture2D), "Internal_Create", new Type[] { typeof(Texture2D), typeof(int), typeof(int), typeof(int), typeof(GraphicsFormat), typeof(TextureCreationFlags), typeof(IntPtr) });
+        // 1.6 port. Unity 2022.3 (RimWorld 1.6) has Internal_Create(Texture2D mono, int w, int h, int mipCount, GraphicsFormat format,
+        // TextureColorSpace colorSpace, TextureCreationFlags flags, IntPtr nativeTex, string mipmapLimitGroupName). The 1.4 copy hard-coded
+        // the older 7-parameter signature: the lookup returned null, CreateDelegate threw, and the exception aborted RimThreaded's start-up
+        // (Player.log: "type initializer for 'RimThreaded.RW_Patches.Texture2D_Patch' threw"). The prefix now takes Harmony's __args, and the
+        // main thread re-invokes the patched original with the same arguments (the prefix lets main-thread calls through), so the parameter
+        // list is never restated here.
+        static readonly MethodInfo internalCreate = AccessTools.Method(typeof(Texture2D), "Internal_Create");
 
-        static readonly Action<Texture2D, int, int, int, GraphicsFormat, TextureCreationFlags, IntPtr> internal_Create =
-            (Action<Texture2D, int, int, int, GraphicsFormat, TextureCreationFlags, IntPtr>)Delegate.CreateDelegate
-            (typeof(Action<Texture2D, int, int, int, GraphicsFormat, TextureCreationFlags, IntPtr>), reflectionMethod);
+        static readonly Action<object[]> invokeInternalCreate = parameters => internalCreate.Invoke(null, parameters);
 
-        static readonly Action<object[]> safeFunction = parameters =>
-            internal_Create(
-                (Texture2D)parameters[0],
-                (int)parameters[1],
-                (int)parameters[2],
-                (int)parameters[3],
-                (GraphicsFormat)parameters[4],
-                (TextureCreationFlags)parameters[5],
-                (IntPtr)parameters[6]);
-
-        public static bool Internal_Create(Texture2D mono, int w, int h, int mipCount, GraphicsFormat format, TextureCreationFlags flags, IntPtr nativeTex)
+        public static bool Internal_Create(object[] __args)
         {
             if (!CurrentThread.IsBackground || !allWorkerThreads.TryGetValue(CurrentThread, out ThreadInfo threadInfo))
                 return true;
-            threadInfo.safeFunctionRequest = new object[] { safeFunction, new object[] { mono, w, h, mipCount, format, flags, nativeTex } };
+            threadInfo.safeFunctionRequest = new object[] { invokeInternalCreate, (object[])__args.Clone() };
             mainThreadWaitHandle.Set();
             threadInfo.eventWaitStart.WaitOne();
             return false;
