@@ -920,7 +920,6 @@ namespace RimThreaded
 			ZoneManager_Patch.RunNonDestructivePatches(); //recheck growing zone when upon zone grid add
 			Zone_Patch.RunNonDestructivePatches(); //recheck growing zone when upon check haul destination call
 			//HediffGiver_Hypothermia_Transpile.RunNonDestructivePatches(); //speed up for comfy temperature //1.4 reexamine
-			Map_Transpile.RunNonDestructivePatches(); //creates separate thread for skyManager.SkyManagerUpdate();            
 			BattleLog_Transpile.RunNonDestructivePatches(); //if still causing issues, rewrite using ThreadSafeLinkedLists
 															//GrammarResolver_Transpile.RunNonDestructivePatches();//reexamine complexity
 															//GrammarResolverSimple_Transpile.RunNonDestructivePatches();//reexamine complexity
@@ -938,7 +937,6 @@ namespace RimThreaded
 			
 			GenGrid_Patch.RunNonDestructivePatches(); //explosion fix
 			ThinkNode_JoinVoluntarilyJoinableLord_Patch.RunDestructivePatches(); //explosion fix
-			Corpse_Patch.RunNonDestructivePatches(); // 1.3 explosion fix
 			TransportShipManager_Patch.RunNonDestructivePatches();
 			//RestUtility_Patch.RunNonDestructivePatches(); // 1.3 explosion fix - not sure why this causes bug with sleeping
 			GrammarResolver_Patch.RunNonDestructivePatches(); //TODO 1.4 reexamine
@@ -1015,7 +1013,6 @@ namespace RimThreaded
 			//GenPlace_Patch.RunDestructivePatches(); // 1.3 TryPlaceThing null thing after kill
 
 			GenSpawn_Patch.RunDestructivePatches(); //fixes null.destroy - commonly caused by gysers
-			GenTemperature_Patch.RunDestructivePatches();
 			GenTypes_Patch.RunDestructivePatches(); //possibly occurs with combat extended
 			GlobalControlsUtility_Patch.RunDestructivePatches(); //Adds TPS indicator
 			GoodwillSituationManager_Patch.RunDestructivePatches(); //initial 1.3 patch

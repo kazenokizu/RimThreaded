@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using RimWorld;
@@ -23,7 +23,6 @@ namespace RimThreaded.RW_Patches
         }
         internal static void RunNonDestructivePatches()
         {
-            RimThreadedHarmony.Postfix(original, patched, nameof(HediffSet.DirtyCache), nameof(DirtyCacheSetInvisbility));
         }
         public static bool GetCoverageOfNotMissingNaturalParts(HediffSet __instance, ref float __result, BodyPartRecord part)
         {
@@ -228,14 +227,6 @@ namespace RimThreaded.RW_Patches
                 __instance.pawn.Drawer.renderer.SetAllGraphicsDirty();
             }
             return false;
-        }
-
-        public static void DirtyCacheSetInvisbility(HediffSet __instance)
-        {
-            lock (PawnUtility_Patch.isPawnInvisible)
-            {
-                PawnUtility_Patch.RecalculateInvisibility(__instance.pawn);
-            }
         }
 
     }

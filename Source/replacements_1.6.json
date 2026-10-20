@@ -284,9 +284,7 @@
           "FieldName": "neighRooms"
         },
         {
-          "FieldName": "beqRooms",
-          "PatchedClassName": "RimThreaded.RW_Patches.GenTemperature_Patch",
-          "SelfInitialized": true
+          "FieldName": "beqRooms"
         }
       ]
     },

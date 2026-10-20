@@ -18,46 +18,56 @@ namespace RimThreaded.RW_Patches
         {
             Type original = typeof(Sustainer);
             Type patched = typeof(Sustainer_Patch);
-            ConstructorInfo oMethod = Constructor(original);
+            ConstructorInfo oMethod = original.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(c => c.GetParameters().Length > 0 && c.GetParameters()[0].ParameterType == typeof(SoundDef));
+            if (oMethod == null)
+            {
+                Log.Error("RimThreaded PATCH FAILED [Sustainer ctor]: constructor (SoundDef, SoundInfo) not found");
+                return;
+            }
             HarmonyMethod transpilerMethod = new HarmonyMethod(Method(patched, nameof(TranspileCtor)));
             RimThreadedHarmony.harmony.Patch(oMethod, transpiler: transpilerMethod);
         }
 
-        public static IEnumerable<CodeInstruction> TranspileCtor(IEnumerable<CodeInstruction> instructions, ILGenerator iLGenerator)
+        public static IEnumerable<CodeInstruction> TranspileCtor(IEnumerable<CodeInstruction> instructions)
         {
             List<CodeInstruction> ciList = instructions.ToList();
+            MethodInfo getSoundRoot = Method(typeof(Find), "get_SoundRoot");
+            FieldInfo sustainerManagerField = Field(typeof(SoundRoot), nameof(SoundRoot.sustainerManager));
+            MethodInfo register = Method(typeof(SustainerManager), nameof(SustainerManager.RegisterSustainer));
+            MethodInfo updateScopes = Method(typeof(SustainerManager), nameof(SustainerManager.UpdateAllSustainerScopes));
+            int replaced = 0;
             int i = 0;
             while (i < ciList.Count)
             {
-                CodeInstruction ci = ciList[i];
-                if (ci.opcode == OpCodes.Call && (MethodInfo)ci.operand == Method(typeof(Find), "get_SoundRoot"))
+                // Find.SoundRoot.sustainerManager.RegisterSustainer(this)  =>  RegisterSustainer(this)
+                if (i + 3 < ciList.Count &&
+                    ciList[i].Calls(getSoundRoot) &&
+                    ciList[i + 1].LoadsField(sustainerManagerField) &&
+                    ciList[i + 2].opcode == OpCodes.Ldarg_0 &&
+                    ciList[i + 3].Calls(register))
                 {
-                    CodeInstruction ci1 = ciList[i + 1];
-                    if (ci1.opcode == OpCodes.Ldfld && (FieldInfo)ci1.operand == Field(typeof(SoundRoot), nameof(SoundRoot.sustainerManager)))
-                    {
-                        CodeInstruction ci2 = ciList[i + 2];
-                        if (ci2.opcode == OpCodes.Ldarg_0)
-                        {
-                            CodeInstruction ci3 = ciList[i + 3];
-                            if (ci3.opcode == OpCodes.Callvirt && (MethodInfo)ci3.operand == Method(typeof(SustainerManager), nameof(SustainerManager.RegisterSustainer)))
-                            {
-                                yield return new CodeInstruction(OpCodes.Ldarg_0);
-                                yield return new CodeInstruction(OpCodes.Call, Method(typeof(Sustainer_Patch), nameof(SustainerManagerRegisterSustainer)));
-                                i += 4;
-                                continue;
-                            }
-                        }
-                        else if (ci2.opcode == OpCodes.Callvirt && (MethodInfo)ci2.operand == Method(typeof(SustainerManager), nameof(SustainerManager.UpdateAllSustainerScopes)))
-                        {
-                            yield return new CodeInstruction(OpCodes.Call, Method(typeof(Sustainer_Patch), nameof(SustainerManagerUpdateAllSustainerScopes)));
-                            i += 3;
-                            continue;
-                        }
-                    }
+                    yield return new CodeInstruction(OpCodes.Ldarg_0).WithLabels(ciList[i].labels);
+                    yield return new CodeInstruction(OpCodes.Call, Method(typeof(Sustainer_Patch), nameof(SustainerManagerRegisterSustainer)));
+                    i += 4;
+                    replaced++;
+                    continue;
                 }
-                yield return ci;
+                // Find.SoundRoot.sustainerManager.UpdateAllSustainerScopes()  =>  UpdateAllSustainerScopes()
+                if (i + 2 < ciList.Count &&
+                    ciList[i].Calls(getSoundRoot) &&
+                    ciList[i + 1].LoadsField(sustainerManagerField) &&
+                    ciList[i + 2].Calls(updateScopes))
+                {
+                    yield return new CodeInstruction(OpCodes.Call, Method(typeof(Sustainer_Patch), nameof(SustainerManagerUpdateAllSustainerScopes))).WithLabels(ciList[i].labels);
+                    i += 3;
+                    replaced++;
+                    continue;
+                }
+                yield return ciList[i];
                 i++;
             }
+            if (replaced != 2) Log.Error("RimThreaded PATCH FAILED [Sustainer ctor]: expected 2 call sites, replaced " + replaced);
         }
         public static void SustainerManagerRegisterSustainer(Sustainer sustainer)
         {

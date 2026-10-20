@@ -53,23 +53,36 @@ namespace RimThreaded.RW_Patches
             return freeFrameSets;
         }
 
+        // Constructor: "this.freeFrameSets.Add(frameSet)" becomes "getFreeFrameSets(this).Push(frameSet)". Only the field load and the Add call are
+        // swapped; the instructions in between (loading the frame set from whatever local the compiler picked) are left untouched.
         public static IEnumerable<CodeInstruction> PawnTextureAtlas(IEnumerable<CodeInstruction> instructions, ILGenerator iLGenerator)
         {
             List<CodeInstruction> instructionsList = instructions.ToList();
+            FieldInfo freeFrameSetsField = Field(original, "freeFrameSets");
+            MethodInfo listAdd = Method(typeof(List<PawnTextureAtlasFrameSet>), "Add");
+            MethodInfo stackPush = Method(typeof(ConcurrentStack<PawnTextureAtlasFrameSet>), "Push");
+            int replaced = 0;
             for (int i = 0; i < instructionsList.Count; i++)
             {
                 CodeInstruction instruction = instructionsList[i];
-                if (instruction.opcode == OpCodes.Ldfld && (FieldInfo)instruction.operand == Field(original, "freeFrameSets"))
+                if (instruction.opcode == OpCodes.Ldfld && (FieldInfo)instruction.operand == freeFrameSetsField)
                 {
-                    yield return new CodeInstruction(OpCodes.Call, Method(patched, nameof(getFreeFrameSets)));
-                    yield return new CodeInstruction(OpCodes.Ldloc_3);
-                    yield return new CodeInstruction(OpCodes.Callvirt, Method(typeof(ConcurrentStack<PawnTextureAtlasFrameSet>), "Push"));
-                    i += 2;
+                    int addIndex = i + 2;
+                    if (addIndex < instructionsList.Count && instructionsList[addIndex].opcode == OpCodes.Callvirt && (MethodInfo)instructionsList[addIndex].operand == listAdd)
+                    {
+                        yield return new CodeInstruction(OpCodes.Call, Method(patched, nameof(getFreeFrameSets))) { labels = instruction.labels };
+                        yield return instructionsList[i + 1];
+                        yield return new CodeInstruction(OpCodes.Callvirt, stackPush) { labels = instructionsList[addIndex].labels };
+                        i += 2;
+                        replaced++;
+                        continue;
+                    }
                 }
-                else
-                {
-                    yield return instruction;
-                }
+                yield return instruction;
+            }
+            if (replaced != 1)
+            {
+                Verse.Log.Error("RimThreaded: PawnTextureAtlas constructor transpiler replaced " + replaced + " freeFrameSets.Add calls (expected 1); frame sets will be lost.");
             }
         }
 

@@ -19,26 +19,43 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Transpile(original, patched, nameof(TakeDamage));
         }
 
-        public static IEnumerable<CodeInstruction> TakeDamage(IEnumerable<CodeInstruction> instructions,
-            ILGenerator iLGenerator)
+        // Vanilla: bool flag = SpawnedOrAnyParentSpawned; Map map = MapHeld; ... if (dinfo.Def.harmsHealth && flag) map.damageWatcher.Notify_DamageTaken(...)
+        // If another thread despawns the thing between those two reads, map is null and the NRE aborts the damage. Add "&& map != null".
+        public static IEnumerable<CodeInstruction> TakeDamage(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
         {
-            List<CodeInstruction> instructionsList = instructions.ToList();
-            for (int i = 0; i < instructionsList.Count; i++)
+            List<CodeInstruction> list = instructions.ToList();
+            MethodInfo getMapHeld = Method(typeof(Thing), "get_MapHeld");
+            int mapLocal = -1;
+            for (int i = 0; i + 1 < list.Count; i++)
             {
-                CodeInstruction ci = instructionsList[i];
-                if (ci.opcode == OpCodes.Call && (MethodInfo)ci.operand == Method(typeof(Map), "get_MapHeld"))
+                if (list[i].Calls(getMapHeld) && list[i + 1].IsStloc())
                 {
-                    yield return instructionsList[i++];
-                    yield return instructionsList[i];
-                    yield return new CodeInstruction(OpCodes.Ldloc_2);
-                    Label label = (Label)instructionsList[i + 13].operand;
-                    yield return new CodeInstruction(OpCodes.Brfalse, label);
-                }
-                else
-                {
-                    yield return ci;
+                    mapLocal = i + 1;
+                    break;
                 }
             }
+            bool patched = false;
+            for (int i = 0; i < list.Count; i++)
+            {
+                yield return list[i];
+                // ... ldfld harmsHealth; ldloc flag; and; brfalse.s L  => insert: ldloc map; brfalse L
+                if (!patched && mapLocal >= 0 && list[i].opcode == OpCodes.And && i + 1 < list.Count && list[i + 1].opcode == OpCodes.Brfalse_S
+                    && i >= 2 && list[i - 2].opcode == OpCodes.Ldfld && list[i - 2].operand is FieldInfo f && f.Name == "harmsHealth")
+                {
+                    yield return list[i + 1];
+                    CodeInstruction guard = new CodeInstruction(OpCodes.Ldloc, list[mapLocal].operand);
+                    guard = list[mapLocal].opcode == OpCodes.Stloc_0 ? new CodeInstruction(OpCodes.Ldloc_0)
+                          : list[mapLocal].opcode == OpCodes.Stloc_1 ? new CodeInstruction(OpCodes.Ldloc_1)
+                          : list[mapLocal].opcode == OpCodes.Stloc_2 ? new CodeInstruction(OpCodes.Ldloc_2)
+                          : list[mapLocal].opcode == OpCodes.Stloc_3 ? new CodeInstruction(OpCodes.Ldloc_3)
+                          : new CodeInstruction(OpCodes.Ldloc_S, list[mapLocal].operand);
+                    yield return guard;
+                    yield return new CodeInstruction(OpCodes.Brfalse_S, list[i + 1].operand);
+                    i++;
+                    patched = true;
+                }
+            }
+            if (!patched) Log.Error("RimThreaded PATCH FAILED [Thing.TakeDamage]: damageWatcher guard pattern not found in " + __originalMethod?.Name);
         }
 
         public static bool get_Map(Thing __instance, ref Map __result)

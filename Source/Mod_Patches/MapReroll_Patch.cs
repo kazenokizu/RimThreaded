@@ -40,7 +40,7 @@ namespace RimThreaded.Mod_Patches
             }
             if (World_Patch.tmpNeighbors == null)
             {
-                World_Patch.tmpNeighbors = new List<int>();
+                World_Patch.tmpNeighbors = new List<PlanetTile>();
             }
             return true;
         }

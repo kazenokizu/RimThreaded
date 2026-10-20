@@ -4,6 +4,7 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using HarmonyLib;
+using System.Reflection.Emit;
 
 public static class Program
 {
@@ -76,16 +77,90 @@ public static class Program
         try { System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(rth.TypeHandle); }
         catch (Exception e) { Failures.Add("CCTOR " + Unwrap(e)); }
 
+        if (args.Length > 2 && args[1] == "identity")
+        {
+            var idh = new Harmony("validator.identity");
+            foreach (string spec in args.Skip(2))
+            {
+                string[] parts = spec.Split("::");
+                Type ty = game.GetType(parts[0]) ?? AccessTools.TypeByName(parts[0]);
+                MethodBase mb = AccessTools.Method(ty, parts[1]);
+                try { idh.Patch(mb, transpiler: new HarmonyMethod(typeof(Program), nameof(IdentityTranspiler))); Console.WriteLine("identity OK  " + spec); }
+                catch (Exception e) { Console.WriteLine("identity FAIL " + spec + " : " + e.GetType().Name); }
+            }
+        }
+        if (args.Length > 2 && args[1] == "sig")
+        {
+            foreach (string spec in args.Skip(2))
+            {
+                string[] parts = spec.Split("::");
+                Type ty = game.GetType(parts[0]) ?? AccessTools.TypeByName(parts[0]);
+                if (ty == null) { Console.WriteLine("sig: type not found " + parts[0]); continue; }
+                foreach (MethodBase m in ty.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).Where(m => parts.Length < 2 || m.Name == parts[1]))
+                    Console.WriteLine("sig: " + ty.FullName + " :: " + (m.IsStatic ? "static " : "") + ((MethodInfo)m).ReturnType.Name + " " + m.Name + "(" + string.Join(", ", m.GetParameters().Select(x => x.ParameterType.Name + " " + x.Name)) + ")");
+            }
+        }
+        if (args.Length > 1 && args[1] == "identity-scan")
+        {
+            var idh = new Harmony("validator.identityscan");
+            int ok = 0, fail = 0, n = 0; var failed = new List<string>();
+            foreach (Type t in SafeTypes(game).Where(t => t.Name.Contains(">d__")))
+            {
+                MethodBase mb = t.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                if (mb == null || Harmony.GetPatchInfo(mb) != null) continue;
+                if (n++ > 150) break;
+                try { idh.Patch(mb, transpiler: new HarmonyMethod(typeof(Program), nameof(IdentityTranspiler))); ok++; }
+                catch (Exception e) { fail++; failed.Add(t.FullName + " " + e.GetType().Name); }
+            }
+            Console.WriteLine("identity-scan ok=" + ok + " fail=" + fail);
+            foreach (string f in failed.Take(20)) Console.WriteLine("  " + f);
+        }
+        if (args.Length > 2 && args[1] == "dump")
+        {
+            foreach (string spec in args.Skip(2))
+            {
+                string[] parts = spec.Split("::");
+                Type ty = game.GetType(parts[0]) ?? AccessTools.TypeByName(parts[0]);
+                MethodBase mb = parts[1] == ".ctor" ? (MethodBase)AccessTools.GetDeclaredConstructors(ty).First(c => !c.IsStatic) : AccessTools.Method(ty, parts[1]);
+                Console.WriteLine("-- " + spec);
+                int n = 0;
+                foreach (var ci in PatchProcessor.GetOriginalInstructions(mb))
+                    Console.WriteLine("   [" + (n++) + "] " + ci.opcode + " " + (ci.operand is Label[] ? "labels" : ci.operand is MemberInfo mi ? mi.DeclaringType?.Name + "::" + mi : ci.operand));
+            }
+        }
+        if (args.Length > 2 && args[1] == "inspect")
+        {
+            MethodInfo xf = AccessTools.Method(rth, "ReplaceFieldsTranspiler");
+            foreach (string spec in args.Skip(2))
+            {
+                string[] parts = spec.Split("::");
+                Type ty = game.GetType(parts[0]) ?? AccessTools.TypeByName(parts[0]);
+                MethodBase mb = AccessTools.Method(ty, parts[1]) ?? (MethodBase)AccessTools.Constructor(ty, null);
+                var before = PatchProcessor.GetOriginalInstructions(mb).ToList();
+                var snapshot = before.Select(i => (i.opcode, i.operand)).ToList();
+                var after = ((IEnumerable<CodeInstruction>)xf.Invoke(null, new object[] { PatchProcessor.GetOriginalInstructions(mb), null })).ToList();
+                Console.WriteLine("-- " + spec + " (" + before.Count + " instrs)");
+                for (int i = 0; i < before.Count && i < after.Count; i++)
+                    if (!Equals(snapshot[i].operand, after[i].operand) || snapshot[i].opcode != after[i].opcode)
+                        Console.WriteLine("   [" + i + "] " + snapshot[i].opcode + " " + snapshot[i].operand + "  =>  " + after[i].opcode + " " + after[i].operand);
+            }
+        }
         Console.WriteLine();
-        var ecall = GameErrors.Concat(Failures).Where(x => x.Contains("ECall methods must be packaged")).ToList();
-        var real = GameErrors.Concat(Failures).Where(x => !x.Contains("ECall methods must be packaged")).Distinct().ToList();
+        JsonFieldCheck(game, mod, Path.Combine(asmDir, "replacements_1.6.json"));
+        // Harmony 2.3.3 on CoreCLR rejects even a do-nothing transpiler on many compiler-generated iterators (identity-scan: 84 of 151
+        // untouched game iterators fail), so an InvalidProgramException on a ">d__" MoveNext says nothing about the mod's own transpiler.
+        bool Unverifiable(string x) => x.Contains("ECall methods must be packaged") || (x.Contains(">d__") && x.Contains("InvalidProgramException"));
+        var ecall = GameErrors.Concat(Failures).Where(Unverifiable).ToList();
+        var real = GameErrors.Concat(Failures).Where(x => !Unverifiable(x)).Distinct().ToList();
         Console.WriteLine("=== REAL failures: " + real.Count);
         foreach (string s in real) Console.WriteLine("  " + s.Replace("\n", " ").Substring(0, Math.Min(600, s.Replace("\n", " ").Length)));
-        Console.WriteLine("=== not JIT-verifiable on this runtime (Unity internal call in body; transpiler itself ran): " + ecall.Count);
+        Console.WriteLine("=== not JIT-verifiable on this runtime (Unity internal call in body, or compiler-generated iterator; the transpiler itself ran): " + ecall.Count);
         foreach (string s in ecall.Take(400)) Console.WriteLine("  " + s.Replace("\n", " ").Substring(0, Math.Min(200, s.Replace("\n", " ").Length)));
         var patched = Harmony.GetAllPatchedMethods().ToList();
         Console.WriteLine("=== methods patched in process: " + patched.Count);
         SignatureCheck(patched);
+        NoOpTranspilerCheck(patched);
+        Console.WriteLine("=== patched iterator/closure methods: " + string.Join(", ", patched.Where(m => m.DeclaringType.Name.Contains(">d__")).Select(m => m.DeclaringType.DeclaringType?.Name + "." + m.DeclaringType.Name)));
         return real.Count == 0 ? 0 : 1;
     }
 
@@ -140,8 +215,66 @@ public static class Program
         Console.WriteLine("=== signature check: " + checkedPatches + " rimthreaded prefix/postfix patches checked, problems: " + problems.Count);
         foreach (string s in problems.Distinct()) Console.WriteLine("  " + s);
     }
+    // Every PatchedClassName entry swaps a vanilla static for a field in a mod class; the types must be identical or the transpiled IL is wrong.
+    static void JsonFieldCheck(Assembly game, Assembly mod, string path)
+    {
+        var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+        int checkedFields = 0;
+        foreach (var cls in doc.RootElement.GetProperty("ClassReplacements").EnumerateArray())
+        {
+            string cn = cls.GetProperty("ClassName").GetString();
+            Type t = game.GetType(cn) ?? AccessTools.TypeByName(cn);
+            if (t == null || !cls.TryGetProperty("ThreadStatics", out var tsl)) continue;
+            foreach (var f in tsl.EnumerateArray())
+            {
+                string fn = f.GetProperty("FieldName").GetString();
+                FieldInfo vf = AccessTools.Field(t, fn);
+                if (vf == null) { Failures.Add("JSON field missing: " + cn + "." + fn); continue; }
+                if (vf.IsInitOnly && false) { }
+                checkedFields++;
+                if (f.TryGetProperty("PatchedClassName", out var pcn))
+                {
+                    Type pt = mod.GetType(pcn.GetString());
+                    FieldInfo pf = pt == null ? null : AccessTools.Field(pt, fn);
+                    if (pf == null) { Failures.Add("JSON patched field missing: " + pcn.GetString() + "." + fn); continue; }
+                    if (pf.FieldType != vf.FieldType) Failures.Add("JSON type mismatch: " + cn + "." + fn + " is " + vf.FieldType + " but " + pcn.GetString() + "." + fn + " is " + pf.FieldType);
+                    if (pf.GetCustomAttribute<ThreadStaticAttribute>() == null) Failures.Add("JSON patched field is not [ThreadStatic]: " + pcn.GetString() + "." + fn);
+                }
+                else if (vf.FieldType.GetConstructor(Type.EmptyTypes) == null && !vf.FieldType.IsValueType)
+                    GameErrors.Add("JSON field type has no parameterless constructor (stays null on worker threads): " + cn + "." + fn + " : " + vf.FieldType);
+            }
+        }
+        Console.WriteLine("=== JSON field check: " + checkedFields + " fields examined");
+    }
+
+    // A transpiler whose IL pattern no longer exists in 1.6 silently changes nothing. Compare the method body before and after.
+    static void NoOpTranspilerCheck(List<MethodBase> patched)
+    {
+        int examined = 0; var noops = new List<string>();
+        foreach (MethodBase m in patched)
+        {
+            Patches info = Harmony.GetPatchInfo(m);
+            if (info == null) continue;
+            var mine = info.Transpilers.Where(t => t.owner == "majorhoff.rimthreaded").ToList();
+            if (mine.Count == 0) continue;
+            // field replacement transpilers are applied to every method that mentions a replaced field, so a no-op there is a bug too
+            examined++;
+            try
+            {
+                string Dump(IEnumerable<CodeInstruction> ins) => string.Join("\n", ins.Select(i => i.opcode + " " + (i.operand is Label[] ? "labels" : i.operand is MemberInfo mi ? mi.DeclaringType?.FullName + "::" + mi : i.operand?.ToString())));
+                string before = Dump(PatchProcessor.GetOriginalInstructions(m));
+                string after = Dump(PatchProcessor.GetCurrentInstructions(m, 1000));
+                if (before == after) noops.Add(Name(m) + " (transpilers: " + string.Join(",", mine.Select(t => t.PatchMethod.Name)) + ")");
+            }
+            catch (Exception e) { if (!(e is System.Security.SecurityException)) noops.Add(Name(m) + " could not be compared: " + e.GetType().Name); }
+        }
+        Console.WriteLine("=== transpiler no-op check: " + examined + " transpiled methods examined, unchanged bodies: " + noops.Count);
+        foreach (string s in noops.Distinct()) Console.WriteLine("  " + s);
+    }
+
     static string Name(MethodBase m) => m.DeclaringType?.Name + "." + m.Name;
 
+    public static IEnumerable<CodeInstruction> IdentityTranspiler(IEnumerable<CodeInstruction> instructions) => instructions;
     static IEnumerable<Type> SafeTypes(Assembly a)
     {
         try { return a.GetTypes(); }

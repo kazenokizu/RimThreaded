@@ -11,17 +11,17 @@ namespace RimThreaded.RW_Patches
 
     public class RenderTexture_Patch
     {
-        public static MethodInfo methodgetTemporaryImpl = Method(typeof(RenderTexture), "GetTemporaryImpl", new Type[] { typeof(int), typeof(int), typeof(int), typeof(GraphicsFormat), typeof(int), typeof(RenderTextureMemoryless), typeof(VRTextureUsage), typeof(bool) });
+        public static MethodInfo methodgetTemporaryImpl = Method(typeof(RenderTexture), "GetTemporaryImpl", new Type[] { typeof(int), typeof(int), typeof(GraphicsFormat), typeof(GraphicsFormat), typeof(int), typeof(RenderTextureMemoryless), typeof(VRTextureUsage), typeof(bool) });
 
-        static Func<int, int, int, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture> getTemporaryImpl =
-            (Func<int, int, int, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture>)Delegate.CreateDelegate
-            (typeof(Func<int, int, int, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture>), methodgetTemporaryImpl);
+        static Func<int, int, GraphicsFormat, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture> getTemporaryImpl =
+            (Func<int, int, GraphicsFormat, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture>)Delegate.CreateDelegate
+            (typeof(Func<int, int, GraphicsFormat, GraphicsFormat, int, RenderTextureMemoryless, VRTextureUsage, bool, RenderTexture>), methodgetTemporaryImpl);
 
         static readonly Func<object[], object> getTemporaryImpl2 = parameters =>
             getTemporaryImpl(
                 (int)parameters[0],
                 (int)parameters[1],
-                (int)parameters[2],
+                (GraphicsFormat)parameters[2],
                 (GraphicsFormat)parameters[3],
                 (int)parameters[4],
                 (RenderTextureMemoryless)parameters[5],
@@ -39,11 +39,11 @@ namespace RimThreaded.RW_Patches
             RimThreadedHarmony.Prefix(original, patched, nameof(get_active));
         }
 
-        public static bool GetTemporaryImpl(ref RenderTexture __result, int width, int height, int depthBuffer, GraphicsFormat format, int antiAliasing = 1, RenderTextureMemoryless memorylessMode = RenderTextureMemoryless.None, VRTextureUsage vrUsage = VRTextureUsage.None, bool useDynamicScale = false)
+        public static bool GetTemporaryImpl(ref RenderTexture __result, int width, int height, GraphicsFormat depthStencilFormat, GraphicsFormat colorFormat, int antiAliasing = 1, RenderTextureMemoryless memorylessMode = RenderTextureMemoryless.None, VRTextureUsage vrUsage = VRTextureUsage.None, bool useDynamicScale = false)
         {
             if (!CurrentThread.IsBackground || !allWorkerThreads.TryGetValue(CurrentThread, out ThreadInfo threadInfo))
                 return true;
-            threadInfo.safeFunctionRequest = new object[] { getTemporaryImpl2, new object[] { width, height, depthBuffer, format, antiAliasing, memorylessMode, vrUsage, useDynamicScale } };
+            threadInfo.safeFunctionRequest = new object[] { getTemporaryImpl2, new object[] { width, height, depthStencilFormat, colorFormat, antiAliasing, memorylessMode, vrUsage, useDynamicScale } };
             mainThreadWaitHandle.Set();
             threadInfo.eventWaitStart.WaitOne();
             __result = (RenderTexture)threadInfo.safeFunctionResult;

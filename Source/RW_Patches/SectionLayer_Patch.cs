@@ -11,12 +11,12 @@ namespace RimThreaded.RW_Patches
     {
         internal static void RunDestructivePatches()
         {
-            Type original = typeof(SectionLayer);
+            Type original = typeof(MapDrawLayer);
             Type patched = typeof(SectionLayer_Patch);
             RimThreadedHarmony.Prefix(original, patched, "GetSubMesh");
         }
 
-        public static bool GetSubMesh(SectionLayer __instance, ref LayerSubMesh __result, Material material)
+        public static bool GetSubMesh(MapDrawLayer __instance, ref LayerSubMesh __result, Material material)
         {
             if (!CurrentThread.IsBackground || !allWorkerThreads.TryGetValue(CurrentThread, out ThreadInfo threadInfo))
                 return true;

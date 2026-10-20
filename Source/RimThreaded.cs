@@ -204,7 +204,6 @@ namespace RimThreaded
             Dijkstra_Patch<IntVec3>.InitializeThreadStatics();
             Dijkstra_Patch<Region>.InitializeThreadStatics();
             Dijkstra_Patch<int>.InitializeThreadStatics();
-            GenTemperature_Patch.InitializeThreadStatics();
             HaulingCache.InitializeThreadStatics();
             JumboCell.InitializeThreadStatics();
             PawnTextureAtlas_Patch.InitializeThreadStatics();

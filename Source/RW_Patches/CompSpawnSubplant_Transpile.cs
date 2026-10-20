@@ -34,6 +34,8 @@ namespace RimThreaded.RW_Patches
             Type patched = typeof(CompSpawnSubplant_Transpile);
             RimThreadedHarmony.Prefix(original, patched, nameof(AddProgress));
             RimThreadedHarmony.Prefix(original, patched, nameof(TryGrowSubplants));
+            RimThreadedHarmony.TranspileMethodLock(original, "DoGrowSubplant"); // subplants.Add / Cleanup RemoveAll on a plain List
+            RimThreadedHarmony.TranspileMethodLock(original, nameof(CompSpawnSubplant.Cleanup));
             //RimThreadedHarmony.Prefix(original, patched, nameof(get_SubplantsForReading));
             //RimThreadedHarmony.Prefix(original, patched, nameof(Cleanup));
 
@@ -134,9 +136,10 @@ namespace RimThreaded.RW_Patches
                 yield return codeInstruction;
             }
         }
-        public static bool AddProgress(CompSpawnSubplant __instance, float progress, bool ignoreMultiplier = false)
+        public static bool AddProgress(CompSpawnSubplant __instance, float progressPerTick, bool ignoreMultiplier = false)
         {
             if (ModLister.CheckRoyalty("Subplant spawning")) { 
+                float progress = progressPerTick;
                 if (!ignoreMultiplier)
                     progress *= __instance.ProgressMultiplier;
                 progress *= (1f + __instance.parent.GetStatValue(StatDefOf.MeditationPlantGrowthOffset));
