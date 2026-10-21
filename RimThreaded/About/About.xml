@@ -11,11 +11,12 @@
   <description>
     RimThreaded enables RimWorld to utilize multiple threads and thus greatly increases the speed of the game.
 
-    UNOFFICIAL RimWorld 1.6 / 1.7 port (local build, not released by the original author)
-    -1.6: built and patch-validated against RimWorld 1.6.4871 rev590 with Harmony 2.4.3
-    -1.7 (experimental, Waylith engine): built against 1.7.4982 rev1280 (.NET 10) and patch-validated with Harmony 3.0.0-rc.3
-    -Not tested in a live game by the porter: report problems with Player.log, not to the original author
-    -Based on RimThreaded 2.7.2 (1.4)
+    UNOFFICIAL RimWorld 1.6 / 1.7 port by kazenokizu (Nolo) - https://github.com/kazenokizu/RimThreaded
+    Not made or supported by the original author: report problems on the fork, not upstream.
+    -Based on RimThreaded 2.7.2 (RimWorld 1.4)
+    -1.7 (Waylith engine, .NET 10): built against 1.7.4982 rev1280; tested in unattended in-game runs on a real colony
+    -1.6: built and patch-validated against 1.6.4871 rev590; not run in a live 1.6 game since the 1.7 fixes
+    -Experimental: back up saves. Bug reports: Player.log + what happened, at https://github.com/kazenokizu/RimThreaded/issues
 
     JOIN OUR COMMUNITY ON DISCORD:
     https://discord.gg/3JJuWK8
@@ -33,8 +34,8 @@
     LOAD ORDER:
     Put RimThreaded last in load order.
 
-    SUBMIT BUGS:
-    https://github.com/cseelhoff/RimThreaded/issues/new/choose
+    SUBMIT BUGS (this port):
+    https://github.com/kazenokizu/RimThreaded/issues
 
     CREDITS:
     Special thank you for helping me test Austin (Stanui)!
